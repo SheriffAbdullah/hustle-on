@@ -3,6 +3,8 @@
 Shared by the CLI (hustleon.py) and the tray app (hustleon_tray.py).
 No third-party dependencies — stdlib + ctypes only.
 """
+
+__version__ = "1.0.0"
 import argparse
 import ctypes
 import datetime
@@ -105,6 +107,62 @@ def enforce_power_settings():
     ok, d = run_powercfg(["/setactive", "SCHEME_CURRENT"])
     results.append(("scheme re-activated", ok, d))
     return results
+
+
+def _query_index(sub, setting):
+    """Current AC/DC power-setting index via aliases; None when hidden/unknown."""
+    try:
+        r = subprocess.run(["powercfg", "/query", "SCHEME_CURRENT", sub, setting],
+                           capture_output=True, text=True, timeout=10)
+        ac = dc = None
+        for line in (r.stdout or "").splitlines():
+            s = line.strip()
+            if s.startswith("Current AC Power Setting Index:"):
+                ac = s.split(":")[1].strip()
+            elif s.startswith("Current DC Power Setting Index:"):
+                dc = s.split(":")[1].strip()
+        if ac is None and dc is None:
+            return None
+        return ac, dc
+    except Exception:
+        return None
+
+
+def _fmt_secs(idx):
+    if idx is None:
+        return "?"
+    try:
+        v = int(idx, 16)
+    except ValueError:
+        return idx
+    if v == 0:
+        return "Never"
+    m, s = divmod(v, 60)
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m" if h else (f"{m}m" if m else f"{s}s")
+
+
+def _fmt_action(idx):
+    return {"0x00000000": "Do nothing", "0x00000001": "Sleep",
+            "0x00000002": "Hibernate", "0x00000003": "Shut down"}.get(
+                (idx or "").lower(), idx if idx else "?")
+
+
+def power_summary():
+    """Short human summary for the About dialog. Never raises."""
+    try:
+        sleep = _query_index(SUB_SLEEP, STANDBYIDLE)
+        hib = _query_index(SUB_SLEEP, HIBERNATEIDLE)
+        disp = _query_index(SUB_VIDEO, VIDEOIDLE)
+        lid = _query_index(SUB_BUTTONS, LIDACTION)
+        return {
+            "sleep": f"{_fmt_secs(sleep[0] if sleep else None)} / {_fmt_secs(sleep[1] if sleep else None)} (AC/DC)" if sleep else "?",
+            "hibernate": f"{_fmt_secs(hib[0] if hib else None)} / {_fmt_secs(hib[1] if hib else None)} (AC/DC)" if hib else "?",
+            "display": f"{_fmt_secs(disp[0] if disp else None)} / {_fmt_secs(disp[1] if disp else None)} (AC/DC)" if disp else "?",
+            "lid": f"{_fmt_action(lid[0] if lid else None)} / {_fmt_action(lid[1] if lid else None)} (AC/DC)" if lid else "hidden (Modern Standby — set in Windows Settings)",
+        }
+    except Exception:
+        return {k: "?" for k in ("sleep", "hibernate", "display", "lid")}
 
 
 def check_settings_text():
@@ -286,6 +344,7 @@ def main(argv=None):
     ap.add_argument("--off", action="store_true")
     ap.add_argument("--timer", type=int, metavar="MINUTES")
     ap.add_argument("--until", metavar="HH:MM")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = ap.parse_args(argv)
 
     if args.check:

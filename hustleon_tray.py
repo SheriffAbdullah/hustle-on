@@ -364,8 +364,44 @@ def act_enforce(ic=None, it=None):
         msgbox(f"Elevation failed: {e}", APP)
 
 
-def act_check(ic=None, it=None):
-    msgbox(core.check_settings_text()[:1500], f"{APP} — settings")
+def act_about(ic=None, it=None):
+    status = {
+        "off": "Off — using system power plan",
+        "on": "Awake indefinitely",
+        "timer": f"Awake — {fmt_remaining()} left" if fmt_remaining() else "Awake on timer",
+        "until": f"Awake until {engine.deadline:%a %H:%M}" if engine.deadline else "Awake until…",
+    }[engine.mode]
+    if engine.battery_paused:
+        status += " (paused: battery low)"
+    ps = core.power_summary()
+    body = (f"Status: {status}\n"
+            f"Display: {'kept on' if engine.screen_on else 'may sleep (CPU stays awake)'}\n"
+            f"Battery guard: {'on (' + str(engine.guard_threshold) + '%)' if engine.guard else 'off'} · {power_brief()}\n"
+            f"Sleep after: {ps['sleep']}\n"
+            f"Display off after: {ps['display']}\n"
+            f"Lid close: {ps['lid']}")
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+        w = tk.Toplevel(root)
+        w.title("About HustleOn")
+        w.attributes("-topmost", True)
+        w.resizable(False, False)
+        tk.Label(w, text="HustleOn", font=("Segoe UI", 16, "bold")).pack(pady=(14, 0))
+        tk.Label(w, text=f"Version {core.__version__}", font=("Segoe UI", 9),
+                 fg="gray").pack()
+        tk.Label(w, text=body, font=("Segoe UI", 10), justify="left").pack(
+            padx=20, pady=12, anchor="w")
+        tk.Button(w, text="OK", width=12,
+                  command=lambda: (w.destroy(), root.destroy())).pack(pady=(0, 14))
+        w.update_idletasks()
+        x = w.winfo_pointerx() - w.winfo_reqwidth() // 2
+        y = w.winfo_pointery() - w.winfo_reqheight() // 2
+        w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        root.mainloop()
+    except Exception:
+        msgbox(f"HustleOn {core.__version__}\n\n{body}", "About HustleOn")
 
 
 def act_quit(ic=None, it=None):
@@ -418,7 +454,7 @@ def build_menu():
                              None, enabled=False))),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Enforce lid settings (admin)…", act_enforce),
-        pystray.MenuItem("Check settings", act_check),
+        pystray.MenuItem("About HustleOn…", act_about),
         pystray.MenuItem("Quit", act_quit),
     )
 

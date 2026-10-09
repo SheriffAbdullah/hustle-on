@@ -39,8 +39,11 @@ lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
   green infinity = on indefinitely, green hourglass = timer, green wall clock = until date/time,
   gray pause-bars = battery-paused. Red dot = LIVE, on the three live states only.
   (Candidates explored in `icons/candidates/`; final set previewed in `icons/icon-gallery.html`.)
-- **Left-click**: Windows opens the menu on single-click by OS design, like Caffeine.
-  The on/off mode items are *default* items — **double-click flips on/off**.
+- **Click behavior** (Caffeine-style, via `TrayIcon` subclass — upstream pystray maps
+  left-click to default-item activation, which caused surprise toggles): EVERY click
+  (left or right) opens the popup menu. No double-click action (backend delivers no
+  DBLCLK without CS_DBLCLKS). Toggling happens only via menu items. `default=` flags
+  remain as bold highlight on the recommended item.
 - **Right-click menu** (Caffeine-style labels):
   - `Keep awake indefinitely` (checked when on; double-click default when off)
   - `Keep awake on interval ▸` → 30 minutes / 1 hour / 2 hours / 8 hours / Custom…
@@ -57,7 +60,10 @@ lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
   - `Quit`
 - **Disabled items with reasons**: e.g. `Until 08:00 (passed)` disabled; battery status line disabled info.
 - **Tooltip**: `hustle-on — Awake indefinitely · AC 100%` / `Awake — 1h12m left · Batt 64%` / `Off (using system power plan) · AC`.
-- **Notifications** (pystray balloon): mode change, expiry, battery auto-off, lid-enforce result. Rate-limited (no heartbeat spam).
+- **Notifications — alerts only, success is silent**: battery auto-off, Windows refusing
+  the stay-awake request (`api_ok` tracked in engine, alerted once per hold), bad `until`
+  input, elevation failure. Mode changes, timer expiry (completed as asked), guard toggles,
+  enforce launch: silent. Explicit dialogs (`Check settings`, single-instance notice) stay.
 - **Single instance**: named mutex/lockfile; second launch notifies existing instance (or just exits with balloon "already running").
 - **Quit**: releases API hold (`ES_CONTINUOUS`), saves settings, removes icon cleanly.
 - **No main window in v1**: Custom timer/until via simple dialog (`tkinter.simpledialog`, stdlib, hidden root). No console window in exe build (`--noconsole`).

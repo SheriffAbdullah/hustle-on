@@ -213,6 +213,7 @@ class Engine:
         self.mode = MODE_OFF
         self.deadline = None  # datetime for timer/until
         self.battery_paused = False
+        self.api_ok = True  # False when Windows refused the last hold request
 
     def activate(self, mode, minutes=None, until=None):
         now = datetime.datetime.now()
@@ -226,7 +227,7 @@ class Engine:
         self.mode = mode
         self.battery_paused = False
         if mode != MODE_OFF:
-            set_execution_state(hold_flags(self.screen_on))
+            self.api_ok = set_execution_state(hold_flags(self.screen_on)) != 0
 
     def deactivate(self):
         self.mode = MODE_OFF
@@ -235,7 +236,7 @@ class Engine:
 
     def reassert(self):
         if self.mode != MODE_OFF:
-            set_execution_state(hold_flags(self.screen_on))
+            self.api_ok = set_execution_state(hold_flags(self.screen_on)) != 0
 
     def remaining(self, now=None):
         if self.mode in (MODE_TIMER, MODE_UNTIL) and self.deadline:

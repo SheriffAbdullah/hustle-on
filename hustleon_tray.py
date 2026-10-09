@@ -141,7 +141,37 @@ def resume_last_mode():
     persist()
 
 
+# ---------- click behavior ----------
+# Upstream pystray shows the menu on RIGHT-click only; LEFT-click fires the
+# default item (a surprise toggle + balloon). Caffeine-style = left-click menu.
+
+class TrayIcon(pystray.Icon):
+    def _on_notify(self, wparam, lparam):
+        from pystray import _win32 as _backend
+        import ctypes
+        win32, wintypes = _backend.win32, _backend.wintypes
+        if self._menu_handle and lparam in (win32.WM_LBUTTONUP, win32.WM_RBUTTONUP):
+            # TrackPopupMenuEx misbehaves unless our window is foreground
+            win32.SetForegroundWindow(self._hwnd)
+            point = wintypes.POINT()
+            win32.GetCursorPos(ctypes.byref(point))
+            hmenu, descriptors = self._menu_handle
+            index = win32.TrackPopupMenuEx(
+                hmenu,
+                win32.TPM_RIGHTALIGN | win32.TPM_BOTTOMALIGN
+                | win32.TPM_RETURNCMD,
+                point.x,
+                point.y,
+                self._menu_hwnd,
+                None)
+            if index > 0:
+                descriptors[index - 1](self)
+        # (no CS_DBLCLKS in backend: double-clicks arrive as plain LBUTTONUPs,
+        # so every click opens the menu; toggling happens only via menu items)
+
+
 def notify(title, msg):
+    """Alerts ONLY: battery auto-off, API failures, bad input. Success is silent."""
     try:
         if icon:
             icon.notify(msg, title)
@@ -219,7 +249,6 @@ def tooltip():
 def act_on(ic=None, it=None):
     engine.battery_paused = False
     engine.activate("on")
-    notify(APP, "On — holding awake indefinitely.")
     persist()
     refresh()
 
@@ -227,7 +256,6 @@ def act_on(ic=None, it=None):
 def act_off(ic=None, it=None):
     engine.deactivate()
     engine.battery_paused = False
-    notify(APP, "Off — normal sleep restored.")
     persist()
     refresh()
 
@@ -236,7 +264,6 @@ def act_timer(minutes):
     def _run(ic=None, it=None):
         engine.battery_paused = False
         engine.activate("timer", minutes=minutes)
-        notify(APP, f"Timer — holding for {minutes} min (until {engine.deadline:%H:%M}).")
         persist()
         refresh()
     return _run
@@ -282,7 +309,6 @@ def act_until(hhmm):
             return
         engine.battery_paused = False
         engine.activate("until", until=dt)
-        notify(APP, f"Holding until {dt:%a %H:%M}.")
         persist()
         refresh()
     return _run
@@ -305,14 +331,12 @@ def act_until_custom(ic=None, it=None):
 def act_toggle_screen(ic=None, it=None):
     engine.screen_on = not engine.screen_on
     engine.reassert()
-    notify(APP, "Keep screen on." if engine.screen_on else "Screen may sleep (CPU stays awake).")
     persist()
     refresh()
 
 
 def act_guard_toggle(ic=None, it=None):
     engine.guard = not engine.guard
-    notify(APP, f"Battery guard {'on' if engine.guard else 'off'}.")
     persist()
     refresh()
 
@@ -320,7 +344,6 @@ def act_guard_toggle(ic=None, it=None):
 def act_guard_threshold(pct):
     def _run(ic=None, it=None):
         engine.guard_threshold = pct
-        notify(APP, f"Battery guard threshold: {pct}%.")
         persist()
         refresh()
     return _run
@@ -336,8 +359,7 @@ def act_enforce(ic=None, it=None):
         rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
         if int(rc) <= 32:
             msgbox("Elevation failed or was cancelled.", APP)
-        else:
-            notify(APP, "Lid enforcement launched (UAC) — use Check settings to verify.")
+        # success is silent; verify via Check settings
     except Exception as e:
         msgbox(f"Elevation failed: {e}", APP)
 
@@ -404,16 +426,19 @@ def build_menu():
 # ---------- heartbeat ----------
 
 def heartbeat():
+    api_was_ok = True
     while True:
         threading.Event().wait(TICK_SECONDS)
         try:
             events = engine.tick()
             if "expired" in events:
-                notify(APP, "Time's up — hold released.")
-                persist()
+                persist()  # completed as asked: silent
             elif "battery_pause" in events:
                 notify(APP, f"Battery low ({power_brief()}) — hold paused. Plug in to resume.")
                 persist()
+            if engine.mode != MODE_OFF and not engine.api_ok and api_was_ok:
+                notify(APP, "Windows refused the stay-awake request — hold may be inactive.")
+            api_was_ok = engine.api_ok if engine.mode != MODE_OFF else True
             refresh()
         except Exception:
             pass
@@ -423,7 +448,7 @@ def main():
     global icon
     ensure_single_instance()
     resume_last_mode()
-    icon = pystray.Icon(APP, ICONS["off"], tooltip(), build_menu())
+    icon = TrayIcon(APP, ICONS["off"], tooltip(), build_menu())
     threading.Thread(target=heartbeat, daemon=True).start()
     refresh()
     icon.run()

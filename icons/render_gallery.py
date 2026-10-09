@@ -6,9 +6,10 @@ D = "icons/gallery"
 W = (255, 255, 255, 255)
 RED = (231, 76, 60, 255)
 GRAY = (128, 128, 128, 255)
-ORANGE = (230, 126, 34, 255)
-BLUE = (52, 152, 219, 255)
-PURPLE = (155, 89, 182, 255)
+GREEN = (46, 204, 113, 255)
+ORANGE = GREEN
+BLUE = GREEN
+PURPLE = GREEN
 
 
 def disc(color):
@@ -83,8 +84,8 @@ table{{border-collapse:collapse}}td{{border:1px solid #444;padding:14px;text-ali
 .traymock{{display:inline-block;background:#1f1f1f;padding:8px 14px;border-radius:6px;margin-top:8px}}
 small{{color:#aaa}}h1{{font-size:22px}}p{{color:#bbb}}</style></head><body>
 <h1>hustle-on FINAL icon set</h1>
-<p>Your spec: gray power = off · orange &infin; = on indefinitely · blue hourglass = timer ·
-purple clock = until · gray pause-bars = battery-paused. Red dot = LIVE (only on the three live states).
+<p>Your spec: gray power = off · green &infin; = on indefinitely · green hourglass = timer ·
+green clock = until · gray pause-bars = battery-paused. Red dot = LIVE (only on the three live states).
 Big = artwork, on-dark-bar = actual 16px tray size.</p>
 <table><tr>{cells}</tr></table></body></html>"""
 open("icons/icon-gallery.html", "w").write(html)

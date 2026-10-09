@@ -26,9 +26,9 @@ APP = "hustle-on"
 TICK_SECONDS = 30
 
 C_OFF = (128, 128, 128, 255)
-C_ON = (230, 126, 34, 255)      # orange: indefinitely on
-C_TIMED = (52, 152, 219, 255)   # blue: timer
-C_UNTIL = (155, 89, 182, 255)   # purple: until date/time
+C_ON = (46, 204, 113, 255)      # green: indefinitely on
+C_TIMED = (46, 204, 113, 255)   # green: timer
+C_UNTIL = (46, 204, 113, 255)   # green: until date/time
 C_PAUSED = (231, 76, 60, 255)   # red live-dot (live states only)
 
 TIMER_PRESETS = [30, 60, 120, 480]

@@ -35,9 +35,10 @@ lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
 - Corrupt/missing settings → defaults (`off`, screen on, guard on/30%).
 
 ## 5. Tray UX (industry-standard best practices)
-- **Icon states** (Pillow-generated white power glyph on solid disc, no binary assets):
-  gray = off, green = on, blue = timer/until. Red dot overlay when battery guard tripped/paused.
-  (Candidates explored in `icons/candidates/` — power glyph won for 16px legibility.)
+- **Icon states** (basic circle + white glyph, no binary assets): gray power = off,
+  green infinity = on indefinitely, green hourglass = timer, green wall clock = until date/time,
+  gray pause-bars = battery-paused. Red dot = LIVE, on the three live states only.
+  (Candidates explored in `icons/candidates/`; final set previewed in `icons/icon-gallery.html`.)
 - **Left-click**: Windows opens the menu on single-click by OS design, like Caffeine.
   The on/off mode items are *default* items — **double-click flips on/off**.
 - **Right-click menu** (Caffeine-style labels):

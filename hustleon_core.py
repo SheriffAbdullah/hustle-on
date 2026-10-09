@@ -7,7 +7,6 @@ Power settings (lid / sleep / hibernate / display) are changed ONLY while a
 hold is live and are restored whenever the hold ends (see begin_hold/end_hold).
 """
 
-__version__ = "1.1.0"
 import argparse
 import ctypes
 import datetime
@@ -22,6 +21,27 @@ import subprocess
 import sys
 import threading
 import time
+
+def _read_version():
+    """Single source of truth is pyproject.toml. A frozen build has no
+    pyproject, so CI generates _version.py from it before PyInstaller runs."""
+    try:
+        from _version import __version__ as v
+        return v
+    except Exception:
+        pass
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "pyproject.toml"), encoding="utf-8") as f:
+            m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', f.read())
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+__version__ = _read_version()
 
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001

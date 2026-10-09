@@ -1,0 +1,12 @@
+[project]
+name = "hustle-on"
+version = "1.2.0"
+description = "Close the lid. Keep working. Auto-stops before your battery pays for it."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Sheriff Abdullah" }]
+dependencies = ["pystray==0.19.5", "pillow"]
+
+[project.urls]
+Homepage = "https://github.com/sheriffabdullah/hustle-on"

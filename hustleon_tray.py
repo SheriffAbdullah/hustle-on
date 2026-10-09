@@ -446,6 +446,15 @@ def heartbeat():
 
 def main():
     global icon
+    # Crisp menus/icons on high-DPI: declare Per-Monitor V2 before any window
+    # exists (manifest covers the exe; this covers running from source).
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
     ensure_single_instance()
     resume_last_mode()
     icon = TrayIcon(APP, ICONS["off"], tooltip(), build_menu())

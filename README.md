@@ -23,7 +23,7 @@ python hustleon.py --timer 60     # hold 60 min
 python hustleon.py --until 18:00  # hold until 18:00
 python hustleon_tray.py           # tray app from source (needs: pip install -r requirements.txt)
 ```
-Rebuild exe: `python -m PyInstaller --noconsole --onefile --name hustle-on hustleon_tray.py`
+Rebuild exe: `python -m PyInstaller --noconsole --onefile --manifest app.manifest --name hustle-on hustleon_tray.py`
 
 ## Why Caffeine fails here
 Caffeine fakes F15 keypresses (idle-sleep only). Lid-close is a power-button

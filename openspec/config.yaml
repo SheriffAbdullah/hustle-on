@@ -1,0 +1,44 @@
+schema: spec-driven
+
+context: |
+  hustle-on (HustleOn): Windows-only Caffeine-style keep-awake tray app that holds the machine
+  awake with the lid closed. Stack: Python 3, pystray + Pillow (tray/icons), stdlib ctypes/tkinter/
+  winreg/subprocess (core), PyInstaller one-file --noconsole exe (hustle-on.spec).
+  Layout: hustleon_core.py (engine, powercfg, battery, settings, CLI main), hustleon_tray.py
+  (tray UI, imports core), hustleon.py (CLI wrapper), icons/ (generated at runtime).
+  Conventions: Windows-only (Win32 via ctypes, powercfg); core stays third-party-free; tray alerts
+  only (success is silent); state in settings.json next to exe (fallback %APPDATA%/hustle-on);
+  machine power config (powercfg) is never auto-reverted except by explicit Restore; no
+  autostart/service in scope. Specs describe ACTUAL behavior; known drift is recorded in each
+  spec Purpose and fixed via a change, not silently.
+
+# Project context (optional)
+# Add only constraints that should guide OpenSpec artifacts and workflows.
+# Include constraints an agent cannot infer by reading the code.
+# Keep general project documentation and discoverable codebase facts out.
+# Example:
+#   context: |
+#     Designs and tasks must cover Windows, macOS, and Linux
+#     Write all artifacts in Spanish
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

@@ -57,7 +57,10 @@ lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
   - separator
   - `Enforce lid settings (admin)…` → relaunches elevate path, reports OK/Needs Admin
   - `About HustleOn…` → dialog with version, live status and short power summary
-    (sleep/display/lid, Modern Standby note)
+    (sleep/display/lid, Modern Standby note), plus a `Fix lid settings (admin)…`
+    button that runs the elevated powercfg enforcement (lid→Do Nothing,
+    sleep/display→Never) and refreshes the summary. The menu itself stays
+    Caffeine-clean: modes + screen + guard + About + Quit.
   - `Quit`
 - **Disabled items with reasons**: e.g. `Until 08:00 (passed)` disabled; battery status line disabled info.
 - **Tooltip** (short, branded): `HustleOn · Awake indefinitely · AC 100%` / `HustleOn · 1h12m left · Batt 64%` / `HustleOn · Off · AC` / `HustleOn · Paused · Batt 15%`.

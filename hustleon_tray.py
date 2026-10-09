@@ -359,12 +359,12 @@ def act_enforce(ic=None, it=None):
         rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
         if int(rc) <= 32:
             msgbox("Elevation failed or was cancelled.", APP)
-        # success is silent; verify via Check settings
+        # success is silent; verify in About HustleOn
     except Exception as e:
         msgbox(f"Elevation failed: {e}", APP)
 
 
-def act_about(ic=None, it=None):
+def _about_body():
     status = {
         "off": "Off — using system power plan",
         "on": "Awake indefinitely",
@@ -374,12 +374,15 @@ def act_about(ic=None, it=None):
     if engine.battery_paused:
         status += " (paused: battery low)"
     ps = core.power_summary()
-    body = (f"Status: {status}\n"
+    return (f"Status: {status}\n"
             f"Display: {'kept on' if engine.screen_on else 'may sleep (CPU stays awake)'}\n"
             f"Battery guard: {'on (' + str(engine.guard_threshold) + '%)' if engine.guard else 'off'} · {power_brief()}\n"
             f"Sleep after: {ps['sleep']}\n"
             f"Display off after: {ps['display']}\n"
             f"Lid close: {ps['lid']}")
+
+
+def act_about(ic=None, it=None):
     try:
         import tkinter as tk
         root = tk.Tk()
@@ -391,17 +394,26 @@ def act_about(ic=None, it=None):
         tk.Label(w, text="HustleOn", font=("Segoe UI", 16, "bold")).pack(pady=(14, 0))
         tk.Label(w, text=f"Version {core.__version__}", font=("Segoe UI", 9),
                  fg="gray").pack()
-        tk.Label(w, text=body, font=("Segoe UI", 10), justify="left").pack(
-            padx=20, pady=12, anchor="w")
-        tk.Button(w, text="OK", width=12,
-                  command=lambda: (w.destroy(), root.destroy())).pack(pady=(0, 14))
+        body = tk.Label(w, text=_about_body(), font=("Segoe UI", 10), justify="left")
+        body.pack(padx=20, pady=12, anchor="w")
+
+        def _fix_lid():
+            act_enforce()
+            body.config(text=_about_body())
+
+        btns = tk.Frame(w)
+        btns.pack(pady=(0, 14))
+        tk.Button(btns, text="Fix lid settings (admin)…", width=24,
+                  command=_fix_lid).pack(side="left", padx=6)
+        tk.Button(btns, text="OK", width=12,
+                  command=lambda: (w.destroy(), root.destroy())).pack(side="left", padx=6)
         w.update_idletasks()
         x = w.winfo_pointerx() - w.winfo_reqwidth() // 2
         y = w.winfo_pointery() - w.winfo_reqheight() // 2
         w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
         root.mainloop()
     except Exception:
-        msgbox(f"HustleOn {core.__version__}\n\n{body}", "About HustleOn")
+        msgbox(f"HustleOn {core.__version__}\n\n{_about_body()}", "About HustleOn")
 
 
 def act_quit(ic=None, it=None):
@@ -453,7 +465,6 @@ def build_menu():
                              + (" — tripped" if engine.battery_paused else ""),
                              None, enabled=False))),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Enforce lid settings (admin)…", act_enforce),
         pystray.MenuItem("About HustleOn…", act_about),
         pystray.MenuItem("Quit", act_quit),
     )

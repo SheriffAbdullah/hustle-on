@@ -8,7 +8,7 @@ Double-click **`dist/hustle-on.exe`** — lives in the tray (up-arrow area):
 - Double-click icon = on/off toggle. Right-click = full menu.
 - Timer (30m/1h/2h/8h/custom), Until (13:00/18:00/08:00/custom HH:MM).
 - `Keep screen on` toggle, `Battery guard` (auto-pause on low battery, default 30%).
-- `Enforce lid settings (admin)…` for one-time UAC lid fix, `Check settings` to verify.
+- `About HustleOn…` for version, live status, and a `Fix lid settings` button (one-time UAC fix).
 - Resumes last mode on launch. Single instance. `Quit` restores normal sleep.
 
 First run: right-click → `Enforce lid settings (admin)…`, or

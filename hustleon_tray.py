@@ -3,6 +3,7 @@
 Run:  python hustleon_tray.py        (double-click the built exe in v1 packaging)
 """
 import ctypes
+import ctypes.wintypes
 import datetime
 import os
 import sys
@@ -334,7 +335,13 @@ def _until_suffix(hhmm):
 def _tk_root():
     import tkinter as tk
     r = tk.Tk()
-    r.withdraw()
+    r.withdraw()  # hide immediately; dialogs parent to it
+    try:
+        from PIL import ImageTk
+        r._icon_ref = ImageTk.PhotoImage(_current_icon_image().resize((32, 32)))
+        r.iconphoto(True, r._icon_ref)
+    except Exception:
+        pass
     r.attributes("-topmost", True)
     return r
 
@@ -451,62 +458,158 @@ def _about_body():
             f"Lid close: {ps['lid']}")
 
 
+def _about_rows():
+    """Key/value rows for the About grid (same data as _about_body)."""
+    return [ln.split(": ", 1) if ": " in ln else ("", ln)
+            for ln in _about_body().split("\n")]
+
+
+def _dark_mode():
+    try:
+        import winreg
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                           r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        return winreg.QueryValueEx(k, "AppsUseLightTheme")[0] == 0
+    except Exception:
+        return False
+
+
+def _current_icon_image():
+    if engine.battery_paused:
+        return ICONS["paused"]
+    return ICONS.get({"timer": "timed"}.get(engine.mode, engine.mode), ICONS["off"])
+
+
+def _set_window_icon(win):
+    """Use the app's own PIL icon (never the Tk feather). Reference kept on win."""
+    try:
+        from PIL import ImageTk
+        win._icon_ref = [ImageTk.PhotoImage(_current_icon_image().resize((32, 32)))]
+        win.iconphoto(True, *win._icon_ref)
+    except Exception:
+        pass
+
+
 def act_about(ic=None, it=None):
     if _about_open[0]:
+        w = _about_open[0]
+        if w is not True:
+            try:  # already open: raise and focus it (marshalled to its own thread)
+                w.after(0, lambda: (w.deiconify(), w.lift(), w.focus_force()))
+            except Exception:
+                pass
         return
     _about_open[0] = True
+    root = None
     try:
         import tkinter as tk
+        from tkinter import ttk
+        # The dialog IS the Tk root: no hidden root, nothing to flash.
         root = tk.Tk()
-        root.withdraw()
-        w = tk.Toplevel(root)
-        w.title("About HustleOn")
-        w.attributes("-topmost", True)
-        w.resizable(False, False)
-        tk.Label(w, text="HustleOn", font=("Segoe UI", 16, "bold")).pack(pady=(14, 0))
-        tk.Label(w, text=f"Version {core.__version__}", font=("Segoe UI", 9),
-                 fg="gray").pack()
-        body = tk.Label(w, text=_about_body(), font=("Segoe UI", 10), justify="left")
-        body.pack(padx=20, pady=12, anchor="w")
+        root.withdraw()  # stay hidden until fully laid out and positioned
+        _about_open[0] = root
+        root.title("About HustleOn")
+        root.resizable(False, False)
+        dark = _dark_mode()
+        bg, fg, sub = ("#202020", "#ffffff", "#9a9a9a") if dark else ("#f3f3f3", "#1a1a1a", "#6b6b6b")
+        root.configure(bg=bg)
+        _set_window_icon(root)
+
+        st = ttk.Style(root)
+        if dark:
+            st.theme_use("clam")
+            st.configure("TButton", background="#333333", foreground=fg, bordercolor="#444444",
+                         focuscolor="#333333", padding=(10, 5))
+            st.map("TButton", background=[("active", "#444444")])
+        st.configure("A.TFrame", background=bg)
+        st.configure("K.TLabel", background=bg, foreground=sub, font=("Segoe UI", 10))
+        st.configure("V.TLabel", background=bg, foreground=fg, font=("Segoe UI", 10))
+        st.configure("T.TLabel", background=bg, foreground=fg, font=("Segoe UI", 16, "bold"))
+        st.configure("S.TLabel", background=bg, foreground=sub, font=("Segoe UI", 9))
+
+        outer = ttk.Frame(root, style="A.TFrame", padding=20)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="HustleOn", style="T.TLabel").pack(anchor="w")
+        ttk.Label(outer, text=f"Version {core.__version__}", style="S.TLabel").pack(anchor="w", pady=(0, 12))
+        grid = ttk.Frame(outer, style="A.TFrame")
+        grid.pack(fill="x")
+        grid.columnconfigure(1, weight=1)
+
+        def _fill():
+            for c in grid.winfo_children():
+                c.destroy()
+            for i, (k, v) in enumerate(_about_rows()):
+                ttk.Label(grid, text=k, style="K.TLabel").grid(row=i, column=0, sticky="nw",
+                                                               padx=(0, 16), pady=2)
+                ttk.Label(grid, text=v, style="V.TLabel", wraplength=300,
+                          justify="left").grid(row=i, column=1, sticky="nw", pady=2)
+
+        _fill()
+
+        def _close(_e=None):
+            _about_open[0] = False
+            try:
+                root.quit()
+            except Exception:
+                pass
 
         def _fix_lid():
             act_enforce()
-            body.config(text=_about_body())
-
-        def _close():
-            _about_open[0] = False
-            for _w in (w, root):
-                try:
-                    _w.destroy()
-                except Exception:
-                    pass
+            _fill()
 
         def _restore():
             res = core.restore_power_defaults()
             refresh_lid_status()
-            body.config(text=_about_body())
+            _fill()
             if not all(ok for _, ok, _ in res):
-                msgbox("Some values could not be restored (Administrator may be required).",
-                       APP)
+                msgbox("Some values could not be restored (Administrator may be required).", APP)
 
-        btns = tk.Frame(w)
-        btns.pack(pady=(0, 14))
-        tk.Button(btns, text="Fix lid settings (admin)…", width=22,
-                  command=_fix_lid).pack(side="left", padx=4)
-        tk.Button(btns, text="Restore sleep defaults", width=20,
-                  command=_restore).pack(side="left", padx=4)
-        tk.Button(btns, text="OK", width=8,
-                  command=_close).pack(side="left", padx=4)
-        w.bind("<Escape>", lambda e: _close())
-        w.protocol("WM_DELETE_WINDOW", _close)
-        w.update_idletasks()
-        x = w.winfo_pointerx() - w.winfo_reqwidth() // 2
-        y = w.winfo_pointery() - w.winfo_reqheight() // 2
-        w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        btns = ttk.Frame(outer, style="A.TFrame")
+        btns.pack(fill="x", pady=(16, 0))
+        for n, (txt, cmd) in enumerate([("Fix lid settings (admin)…", _fix_lid),
+                                        ("Restore sleep defaults", _restore),
+                                        ("Close", _close)]):
+            b = ttk.Button(btns, text=txt, command=cmd, width=22)
+            b.grid(row=0, column=n, padx=(0 if n == 0 else 8, 0), sticky="ew")
+            btns.columnconfigure(n, weight=1, uniform="b")
+            if n == 2:
+                b.focus_set()
+        root.bind("<Return>", _close)
+        root.bind("<Escape>", _close)
+        root.protocol("WM_DELETE_WINDOW", _close)
+
+        root.update_idletasks()
+        if dark:
+            try:
+                hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 20, ctypes.byref(ctypes.c_int(1)), 4)
+            except Exception:
+                pass
+        # center on the primary work area (excludes taskbar)
+        try:
+            rc = ctypes.wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rc), 0)
+            ax, ay, aw, ah = rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top
+        except Exception:
+            ax, ay, aw, ah = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+        ww, wh = root.winfo_reqwidth(), root.winfo_reqheight()
+        root.geometry(f"+{ax + (aw - ww) // 2}+{ay + (ah - wh) // 2}")
+        root.attributes("-topmost", True)
+        root.deiconify()
+        root.lift()
+        root.focus_force()
         root.mainloop()
     except Exception:
         _about_open[0] = False
         msgbox(f"HustleOn {core.__version__}\n\n{_about_body()}", "About HustleOn")
+    finally:
+        _about_open[0] = False
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass
 
 
 def act_quit(ic=None, it=None):

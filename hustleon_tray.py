@@ -45,13 +45,14 @@ def ensure_single_instance():
     return m
 
 
-# ---------- icons (generated, no binary assets) ----------
+# ---------- icons: white power glyph on solid disc (legible at 16px) ----------
 
 def make_icon(color, paused=False):
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.ellipse([6, 6, 58, 58], fill=color)
-    d.ellipse([22, 22, 42, 42], fill=(255, 255, 255, 255))  # coffee-ring hole
+    d.ellipse([4, 4, 60, 60], fill=color)
+    d.arc([19, 19, 45, 45], start=300, end=240, fill=(255, 255, 255, 255), width=6)
+    d.line([32, 13, 32, 33], fill=(255, 255, 255, 255), width=6)
     if paused:
         d.ellipse([40, 40, 60, 60], fill=C_PAUSED)
     return img
@@ -155,25 +156,20 @@ def power_brief():
 
 
 def tooltip():
-    base = {"off": "Off", "on": "On", "timer": "Timer", "until": "Until"}[engine.mode]
-    extra = f" — {fmt_remaining()} left" if fmt_remaining() else ""
-    paused = " — PAUSED (battery)" if engine.battery_paused else ""
-    return f"{APP}: {base}{extra}{paused} — {power_brief()}"
+    if engine.battery_paused:
+        state = "Paused (battery low)"
+    elif engine.mode == "off":
+        state = "Off (using system power plan)"
+    elif engine.mode == "on":
+        state = "Awake indefinitely"
+    elif engine.mode == "timer":
+        state = f"Awake — {fmt_remaining()} left" if fmt_remaining() else "Awake on timer"
+    else:
+        state = f"Awake until {engine.deadline:%a %H:%M}" if engine.deadline else "Awake until…"
+    return f"{APP} — {state} · {power_brief()}"
 
 
 # ---------- actions (menu callbacks take icon, item) ----------
-
-def act_toggle(ic=None, it=None):
-    engine.battery_paused = False
-    if engine.mode == "off":
-        engine.activate("on")
-        notify(APP, f"On — holding awake ({power_brief()}).")
-    else:
-        engine.deactivate()
-        notify(APP, "Off — normal sleep restored.")
-    persist()
-    refresh()
-
 
 def act_on(ic=None, it=None):
     engine.battery_paused = False
@@ -315,22 +311,31 @@ def act_quit(ic=None, it=None):
 # ---------- menu ----------
 
 def build_menu():
-    timed = engine.mode in ("timer", "until")
-    items = [
-        pystray.MenuItem("Turn on" if engine.mode == "off" else "Turn off",
-                         act_toggle, default=True),
-        pystray.MenuItem("On (indefinite)", act_on,
-                         checked=lambda it: engine.mode == "on"),
-        pystray.MenuItem("Timer", pystray.Menu(
-            *[pystray.MenuItem(f"{m // 60}h" if m % 60 == 0 else f"{m}m",
+    # Caffeine-style labels: modes read as sentences, active mode checked,
+    # double-click (default item) flips on/off.
+    interval_label = "Keep awake on interval"
+    if engine.mode == "timer" and fmt_remaining():
+        interval_label += f" ({fmt_remaining()} left)"
+    until_label = "Keep awake until expiration date and time"
+    if engine.mode == "until" and engine.deadline:
+        until_label += f" (until {engine.deadline:%a %H:%M})"
+    return pystray.Menu(
+        pystray.MenuItem("Keep awake indefinitely", act_on,
+                         checked=lambda it: engine.mode == "on",
+                         default=(engine.mode == "off")),
+        pystray.MenuItem(interval_label, pystray.Menu(
+            *[pystray.MenuItem(f"{m // 60} hour(s)" if m % 60 == 0 else f"{m} minutes",
                                act_timer(m),
                                checked=lambda it, m=m: engine.mode == "timer"
                                and getattr(engine, "timer_minutes", None) == m)
               for m in TIMER_PRESETS],
             pystray.MenuItem("Custom…", act_timer_custom))),
-        pystray.MenuItem("Until", pystray.Menu(
+        pystray.MenuItem(until_label, pystray.Menu(
             *[pystray.MenuItem(label, act_until(hhmm)) for label, hhmm in UNTIL_PRESETS],
             pystray.MenuItem("Custom…", act_until_custom))),
+        pystray.MenuItem("Off (keep using the selected power plan)", act_off,
+                         checked=lambda it: engine.mode == "off",
+                         default=(engine.mode != "off")),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Keep screen on", act_toggle_screen,
                          checked=lambda it: engine.screen_on),
@@ -348,11 +353,7 @@ def build_menu():
         pystray.MenuItem("Enforce lid settings (admin)…", act_enforce),
         pystray.MenuItem("Check settings", act_check),
         pystray.MenuItem("Quit", act_quit),
-    ]
-    if timed:
-        items.insert(1, pystray.MenuItem(f"Active: {engine.mode} — {fmt_remaining()} left",
-                                        None, enabled=False))
-    return pystray.Menu(*items)
+    )
 
 
 # ---------- heartbeat ----------

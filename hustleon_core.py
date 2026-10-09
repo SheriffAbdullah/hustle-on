@@ -164,7 +164,12 @@ def get_power_status():
 # ---------- settings persistence ----------
 
 def settings_path():
-    here = os.path.dirname(os.path.abspath(__file__))
+    if getattr(sys, "frozen", False):
+        # PyInstaller onefile: __file__ points into the ephemeral _MEI temp dir,
+        # so persist next to the exe instead (resume-last-mode survives restarts).
+        here = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        here = os.path.dirname(os.path.abspath(__file__))
     try:
         probe = os.path.join(here, ".writetest")
         with open(probe, "w") as f:

@@ -35,14 +35,18 @@ lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
 - Corrupt/missing settings → defaults (`off`, screen on, guard on/30%).
 
 ## 5. Tray UX (industry-standard best practices)
-- **Icon states** (Pillow-generated, no binary assets): gray = off, green = on,
-  blue = timer/until. Optional red dot overlay when battery guard tripped/paused.
-- **Left-click**: Windows opens the menu on single-click by OS design, so the
-  `Turn on/off` item is the *default* item — **double-click toggles**. Same convention as Caffeine.
-- **Right-click menu**:
-  - `Turn on` / `Turn off` (label flips with state; checked state on `On` item)
-  - `Timer ▸` → 30m / 1h / 2h / 8h / Custom… (checked = active preset w/ remaining)
-  - `Until ▸` → presets (Lunch 13:00 / EOD 18:00 / Morning 08:00) / Custom… (HH:MM dialog)
+- **Icon states** (Pillow-generated white power glyph on solid disc, no binary assets):
+  gray = off, green = on, blue = timer/until. Red dot overlay when battery guard tripped/paused.
+  (Candidates explored in `icons/candidates/` — power glyph won for 16px legibility.)
+- **Left-click**: Windows opens the menu on single-click by OS design, like Caffeine.
+  The on/off mode items are *default* items — **double-click flips on/off**.
+- **Right-click menu** (Caffeine-style labels):
+  - `Keep awake indefinitely` (checked when on; double-click default when off)
+  - `Keep awake on interval ▸` → 30 minutes / 1 hour / 2 hours / 8 hours / Custom…
+    (active preset checked, remaining time appended to the label)
+  - `Keep awake until expiration date and time ▸` → Lunch 13:00 / EOD 18:00 /
+    Morning 08:00 / Custom… (deadline appended to the label)
+  - `Off (keep using the selected power plan)` (checked when off; double-click default when on)
   - separator
   - ☑ `Keep screen on` (default on)
   - `Battery guard ▸` → ☑ Enabled / Threshold ▸ 10/15/20/30% / status line (disabled info item)
@@ -51,7 +55,7 @@ lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
   - `Check settings` → balloon/dialog summary (sleep/lid/display, Modern Standby note)
   - `Quit`
 - **Disabled items with reasons**: e.g. `Until 08:00 (passed)` disabled; battery status line disabled info.
-- **Tooltip**: `hustle-on: On — 1h12m left — AC` / `Off — Batt 64%`.
+- **Tooltip**: `hustle-on — Awake indefinitely · AC 100%` / `Awake — 1h12m left · Batt 64%` / `Off (using system power plan) · AC`.
 - **Notifications** (pystray balloon): mode change, expiry, battery auto-off, lid-enforce result. Rate-limited (no heartbeat spam).
 - **Single instance**: named mutex/lockfile; second launch notifies existing instance (or just exits with balloon "already running").
 - **Quit**: releases API hold (`ES_CONTINUOUS`), saves settings, removes icon cleanly.

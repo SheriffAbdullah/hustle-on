@@ -59,7 +59,7 @@ lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
   - `Check settings` → balloon/dialog summary (sleep/lid/display, Modern Standby note)
   - `Quit`
 - **Disabled items with reasons**: e.g. `Until 08:00 (passed)` disabled; battery status line disabled info.
-- **Tooltip**: `hustle-on — Awake indefinitely · AC 100%` / `Awake — 1h12m left · Batt 64%` / `Off (using system power plan) · AC`.
+- **Tooltip** (short, branded): `HustleOn · Awake indefinitely · AC 100%` / `HustleOn · 1h12m left · Batt 64%` / `HustleOn · Off · AC` / `HustleOn · Paused · Batt 15%`.
 - **Notifications — alerts only, success is silent**: battery auto-off, Windows refusing
   the stay-awake request (`api_ok` tracked in engine, alerted once per hold), bad `until`
   input, elevation failure. Mode changes, timer expiry (completed as asked), guard toggles,

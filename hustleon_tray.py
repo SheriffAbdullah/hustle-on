@@ -22,7 +22,7 @@ except ImportError:
 
 import hustleon_core as core
 
-APP = "hustle-on"
+APP = "HustleOn"
 TICK_SECONDS = 30
 
 C_OFF = (128, 128, 128, 255)
@@ -232,16 +232,16 @@ def power_brief():
 
 def tooltip():
     if engine.battery_paused:
-        state = "Paused (battery low)"
+        state = "Paused"
     elif engine.mode == "off":
-        state = "Off (using system power plan)"
+        state = "Off"
     elif engine.mode == "on":
         state = "Awake indefinitely"
     elif engine.mode == "timer":
-        state = f"Awake — {fmt_remaining()} left" if fmt_remaining() else "Awake on timer"
+        state = f"{fmt_remaining()} left" if fmt_remaining() else "Timer"
     else:
-        state = f"Awake until {engine.deadline:%a %H:%M}" if engine.deadline else "Awake until…"
-    return f"{APP} — {state} · {power_brief()}"
+        state = f"Until {engine.deadline:%a %H:%M}" if engine.deadline else "Until…"
+    return f"{APP} · {state} · {power_brief()}"
 
 
 # ---------- actions (menu callbacks take icon, item) ----------

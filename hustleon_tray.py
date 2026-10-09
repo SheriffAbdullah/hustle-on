@@ -1,4 +1,4 @@
-"""hustle-on tray app — caffeine-style system-tray keep-awake.
+"""hustle-on tray app - caffeine-style system-tray keep-awake.
 
 Run:  python hustleon_tray.py        (double-click the built exe in v1 packaging)
 """
@@ -6,8 +6,17 @@ import ctypes
 import ctypes.wintypes
 import datetime
 import os
+import queue
 import sys
 import threading
+
+import hustleon_core as core
+
+# The elevated one-time unlock must run BEFORE heavy imports and before the
+# single-instance check: a frozen exe has no script arg, and the tray is
+# usually already running when the elevated copy starts.
+if __name__ == "__main__" and "--enforce-only" in sys.argv[1:]:
+    raise SystemExit(core.main(["--enforce-only"]))
 
 try:
     from PIL import Image, ImageDraw
@@ -21,10 +30,9 @@ except ImportError:
     print("pystray required: pip install pystray", file=sys.stderr)
     raise SystemExit(1)
 
-import hustleon_core as core
-
 APP = "HustleOn"
-TICK_SECONDS = 30
+TICK_SECONDS = core.HEARTBEAT_SECONDS
+POWER_SETTINGS_URI = "ms-settings:powersleep"
 
 C_OFF = (128, 128, 128, 255)
 C_ON = (46, 204, 113, 255)      # green: indefinitely on
@@ -39,12 +47,23 @@ UNTIL_PRESETS = [("Lunch 13:00", "13:00"), ("EOD 18:00", "18:00"), ("Morning 08:
 # ---------- single instance ----------
 
 def ensure_single_instance():
-    m = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\HustleOnSingleInstance")
-    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    ctypes.set_last_error(0)
+    m = k32.CreateMutexW(None, False, "Local\\HustleOnSingleInstance")
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
         ctypes.windll.user32.MessageBoxW(None, "hustle-on is already running (check the tray).",
                                         APP, 0x40)
         raise SystemExit(0)
     return m
+
+
+def elevation_command():
+    """(exe, params) for the one-time elevated lid unlock."""
+    if getattr(sys, "frozen", False):
+        return sys.executable, "--enforce-only"
+    return sys.executable, f'"{os.path.abspath(core.__file__)}" --enforce-only'
 
 
 # ---------- icons: user-specced set (basic circle; red dot = LIVE only) ----------
@@ -112,52 +131,73 @@ ICONS = {"off": _icon_off(), "on": _icon_on(), "timed": _icon_timer(),
 saved = core.load_settings()
 engine = core.Engine(screen_on=saved.get("screen_on", True),
                      guard=saved.get("battery_guard", True),
-                     guard_threshold=saved.get("battery_threshold", 30))
+                     guard_threshold=saved.get("battery_threshold", 30),
+                     thermal_guard=saved.get("thermal_guard", False),
+                     thermal_threshold=saved.get("thermal_threshold", 90))
 icon = None  # pystray Icon, set in main
 _mutex = None  # single-instance handle, module-held so lifetime is explicit
 _heartbeat_wake = threading.Event()
 _last_menu_key = [None]
-lid_protected = None  # True/False once checked; None = unknown
-_about_open = [False]
+lid_state = "unknown"   # 'protected' | 'unprotected' | 'unknown' (read-back)
+_quitting = [False]
+_alerted = {"unprotected": False, "restore": False}
 
 
 def persist():
+    if _quitting[0]:
+        return
     saved.update({"mode": engine.mode,
-                  "timer_minutes": getattr(engine, "timer_minutes", saved.get("timer_minutes", 60)),
+                  "timer_minutes": engine.timer_minutes,
                   "until_iso": engine.deadline.isoformat() if engine.deadline else None,
+                  "last_mode": engine.snapshot_mode(),   # None on explicit Off / expiry
                   "screen_on": engine.screen_on,
                   "battery_guard": engine.guard,
-                  "battery_threshold": engine.guard_threshold})
+                  "battery_threshold": engine.guard_threshold,
+                  "thermal_guard": engine.thermal_guard,
+                  "thermal_threshold": engine.thermal_threshold})
     core.save_settings(saved)
 
 
 def resume_last_mode():
-    mode = saved.get("mode", "off")
-    if mode == "on":
-        engine.activate("on")
-    elif mode in ("timer", "until"):
-        try:
-            dl = datetime.datetime.fromisoformat(saved["until_iso"]) if saved.get("until_iso") else None
-        except Exception:
-            dl = None
-        if dl and dl > datetime.datetime.now():
-            engine.mode = mode
-            engine.deadline = dl
-            engine.timer_minutes = saved.get("timer_minutes", 60)
-            engine.reassert()
-        # else: expired while away -> stay off
+    engine.resume_from_last(core.resume_plan(saved))
     persist()
 
 
 def refresh_lid_status():
-    """Cache whether lid-close is truly Do Nothing (read-back, not rc)."""
-    global lid_protected
+    """Cache the tri-state lid status (read-back, never the powercfg rc)."""
+    global lid_state
     try:
-        s = core.power_summary()["lid"]
-        parts = [p.strip().lower() for p in s.split("/")]
-        lid_protected = len(parts) == 2 and all("do nothing" in p for p in parts)
+        lid_state = core.lid_status()
     except Exception:
-        lid_protected = None
+        lid_state = "unknown"
+
+
+def open_power_settings(ic=None, it=None):
+    try:
+        os.startfile(POWER_SETTINGS_URI)
+    except Exception:
+        msgbox("Open Windows Settings > System > Power & battery and set the lid to Do Nothing.")
+
+
+def check_alerts():
+    """Failure-only alerts, once per occurrence."""
+    if engine.mode == "off":
+        _alerted["unprotected"] = False
+    elif lid_state == "unprotected" and not _alerted["unprotected"]:
+        _alerted["unprotected"] = True
+        notify(APP, "The lid will still put this PC to sleep. Open Windows power settings.")
+    if engine.restore_ok:
+        _alerted["restore"] = False
+    elif not _alerted["restore"]:
+        _alerted["restore"] = True
+        notify(APP, "Couldn't restore your sleep settings. Use About > Restore sleep defaults.")
+
+
+def after_change():
+    persist()
+    refresh_lid_status()
+    check_alerts()
+    refresh()
 
 
 # ---------- click behavior ----------
@@ -165,32 +205,52 @@ def refresh_lid_status():
 # default item (a surprise toggle + balloon). Caffeine-style = left-click menu.
 
 class TrayIcon(pystray.Icon):
-    def _on_notify(self, wparam, lparam):
+    pass
+
+
+def _left_click_on_notify(self, wparam, lparam):
+    from pystray import _win32 as _backend
+    win32, wintypes = _backend.win32, _backend.wintypes
+    if self._menu_handle and lparam in (win32.WM_LBUTTONUP, win32.WM_RBUTTONUP):
+        try:
+            refresh()  # live battery/mode data: menu never shows a stale snapshot
+        except Exception:
+            pass
+        # TrackPopupMenuEx misbehaves unless our window is foreground
+        win32.SetForegroundWindow(self._hwnd)
+        point = wintypes.POINT()
+        win32.GetCursorPos(ctypes.byref(point))
+        hmenu, descriptors = self._menu_handle
+        index = win32.TrackPopupMenuEx(
+            hmenu,
+            win32.TPM_RIGHTALIGN | win32.TPM_BOTTOMALIGN
+            | win32.TPM_RETURNCMD,
+            point.x,
+            point.y,
+            self._menu_hwnd,
+            None)
+        if index > 0:
+            descriptors[index - 1](self)
+    # (no CS_DBLCLKS in backend: double-clicks arrive as plain LBUTTONUPs,
+    # so every click opens the menu; toggling happens only via menu items)
+
+
+def _can_override_notify():
+    """Only replace pystray's click handling if its private hooks exist."""
+    try:
         from pystray import _win32 as _backend
-        import ctypes
-        win32, wintypes = _backend.win32, _backend.wintypes
-        if self._menu_handle and lparam in (win32.WM_LBUTTONUP, win32.WM_RBUTTONUP):
-            try:
-                refresh()  # live battery/mode data: menu never shows a stale snapshot
-            except Exception:
-                pass
-            # TrackPopupMenuEx misbehaves unless our window is foreground
-            win32.SetForegroundWindow(self._hwnd)
-            point = wintypes.POINT()
-            win32.GetCursorPos(ctypes.byref(point))
-            hmenu, descriptors = self._menu_handle
-            index = win32.TrackPopupMenuEx(
-                hmenu,
-                win32.TPM_RIGHTALIGN | win32.TPM_BOTTOMALIGN
-                | win32.TPM_RETURNCMD,
-                point.x,
-                point.y,
-                self._menu_hwnd,
-                None)
-            if index > 0:
-                descriptors[index - 1](self)
-        # (no CS_DBLCLKS in backend: double-clicks arrive as plain LBUTTONUPs,
-        # so every click opens the menu; toggling happens only via menu items)
+        return (hasattr(pystray.Icon, "_on_notify")
+                and all(hasattr(_backend.win32, n) for n in
+                        ("WM_LBUTTONUP", "WM_RBUTTONUP", "SetForegroundWindow", "GetCursorPos",
+                         "TrackPopupMenuEx", "TPM_RIGHTALIGN", "TPM_BOTTOMALIGN", "TPM_RETURNCMD"))
+                and hasattr(_backend, "wintypes"))
+    except Exception:
+        return False
+
+
+if _can_override_notify():
+    TrayIcon._on_notify = _left_click_on_notify
+# else: pystray's default right-click menu is used
 
 
 def notify(title, msg):
@@ -208,9 +268,9 @@ def msgbox(text, title=APP):
 
 def _menu_key():
     return (engine.mode, engine.deadline.isoformat() if engine.deadline else None,
-            engine.screen_on, engine.guard, engine.guard_threshold,
-            engine.battery_paused, engine.api_ok, lid_protected,
-            getattr(engine, "timer_minutes", None))
+            engine.screen_on, engine.guard, engine.guard_threshold, engine.thermal_guard,
+            engine.battery_paused, engine.api_ok, lid_state, engine.timer_minutes,
+            core.autostart_enabled())
 
 
 def refresh():
@@ -276,28 +336,97 @@ def tooltip():
     return f"{APP} · {state} · {power_brief()}"
 
 
+# ---------- Tk UI thread: the ONE tk.Tk() in the process ----------
+
+class UiThread:
+    """Owns the sole (hidden) Tk root. Dialogs are Toplevels built on this
+    thread; other threads post callables with call()."""
+
+    def __init__(self):
+        self._q = queue.Queue()
+        self._ready = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = None
+        self.root = None
+        self.failed = False
+
+    def _start(self):
+        with self._lock:
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name="hustleon-ui", daemon=True)
+                self._thread.start()
+        self._ready.wait(10)
+
+    def _run(self):
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            root.withdraw()  # hidden for life; dialogs are Toplevels
+            try:
+                from PIL import ImageTk
+                root._icon_ref = ImageTk.PhotoImage(_current_icon_image().resize((32, 32)))
+                root.iconphoto(True, root._icon_ref)
+            except Exception:
+                pass
+            self.root = root
+            self._ready.set()
+            self._pump()
+            root.mainloop()
+        except Exception:
+            self.failed = True
+            self._ready.set()
+
+    def _pump(self):
+        try:
+            while True:
+                fn = self._q.get_nowait()
+                try:
+                    fn()
+                except Exception as e:
+                    core.log(f"ui callback failed: {e}")
+        except queue.Empty:
+            pass
+        if self.root is not None:
+            self.root.after(100, self._pump)
+
+    def call(self, fn):
+        """Run fn on the UI thread. False when Tk is unavailable."""
+        self._start()
+        if self.failed or self.root is None:
+            return False
+        self._q.put(fn)
+        return True
+
+    def stop(self):
+        if self.root is not None:
+            try:
+                self.root.after(0, self.root.quit)
+            except Exception:
+                pass
+
+
+ui = UiThread()
+
+
 # ---------- actions (menu callbacks take icon, item) ----------
 
 def act_on(ic=None, it=None):
     engine.battery_paused = False
     engine.activate("on")
-    persist()
-    refresh()
+    after_change()
 
 
 def act_off(ic=None, it=None):
-    engine.deactivate()
+    engine.deactivate("off")
     engine.battery_paused = False
-    persist()
-    refresh()
+    after_change()
 
 
 def act_timer(minutes):
     def _run(ic=None, it=None):
         engine.battery_paused = False
         engine.activate("timer", minutes=minutes)
-        persist()
-        refresh()
+        after_change()
     return _run
 
 
@@ -308,8 +437,7 @@ def act_resume(ic=None, it=None):
             notify(APP, f"Still on battery at {pct}% (guard {engine.guard_threshold}%) — plug in to resume.")
             return
     engine.resume_snapshot()
-    persist()
-    refresh()
+    after_change()
 
 
 def _timer_label(m):
@@ -332,31 +460,20 @@ def _until_suffix(hhmm):
     return ""
 
 
-def _tk_root():
-    import tkinter as tk
-    r = tk.Tk()
-    r.withdraw()  # hide immediately; dialogs parent to it
-    try:
-        from PIL import ImageTk
-        r._icon_ref = ImageTk.PhotoImage(_current_icon_image().resize((32, 32)))
-        r.iconphoto(True, r._icon_ref)
-    except Exception:
-        pass
-    r.attributes("-topmost", True)
-    return r
+def _in_worker(fn):
+    threading.Thread(target=fn, name="hustleon-action", daemon=True).start()
 
 
 def act_timer_custom(ic=None, it=None):
-    try:
+    def _dialog():
         from tkinter import simpledialog
-        r = _tk_root()
-        try:
-            v = simpledialog.askinteger(APP, "Hold for how many minutes?", minvalue=1, maxvalue=1440)
-        finally:
-            r.destroy()
+        root = ui.root
+        root.attributes("-topmost", True)
+        v = simpledialog.askinteger(APP, "Hold for how many minutes?", parent=root,
+                                    minvalue=1, maxvalue=1440)
         if v:
-            act_timer(v)()
-    except Exception:
+            _in_worker(act_timer(v))
+    if not ui.call(_dialog):
         notify(APP, "Custom timer unavailable (tkinter missing).")
 
 
@@ -378,22 +495,19 @@ def act_until(hhmm):
             return
         engine.battery_paused = False
         engine.activate("until", until=dt)
-        persist()
-        refresh()
+        after_change()
     return _run
 
 
 def act_until_custom(ic=None, it=None):
-    try:
+    def _dialog():
         from tkinter import simpledialog
-        r = _tk_root()
-        try:
-            v = simpledialog.askstring(APP, "Hold until what time? (HH:MM)")
-        finally:
-            r.destroy()
+        root = ui.root
+        root.attributes("-topmost", True)
+        v = simpledialog.askstring(APP, "Hold until what time? (HH:MM)", parent=root)
         if v:
-            act_until(v)()
-    except Exception:
+            _in_worker(act_until(v))
+    if not ui.call(_dialog):
         notify(APP, "Custom 'until' unavailable (tkinter missing).")
 
 
@@ -420,17 +534,33 @@ def act_guard_threshold(pct):
     return _run
 
 
-def act_enforce(ic=None, it=None):
-    if getattr(sys, "frozen", False):
-        exe, params = sys.executable, "--enforce-only"
-    else:
-        exe = sys.executable
-        params = f'"{os.path.abspath("hustleon_core.py")}" --enforce-only'
+def act_thermal_toggle(ic=None, it=None):
+    engine.thermal_guard = not engine.thermal_guard
+    persist()
+    refresh()
+
+
+def act_autostart_toggle(ic=None, it=None):
+    want = not core.autostart_enabled()
+    ok, detail = core.set_autostart(want)
+    if not ok:
+        notify(APP, f"Couldn't change Start with Windows: {detail[:80]}")
+    saved["start_with_windows"] = core.autostart_enabled()
+    persist()
+    refresh()
+
+
+def act_unlock_lid(ic=None, it=None):
+    """One-time elevated unhide of the lid setting (Modern Standby). Only shown
+    when the lid setting is hidden; day-to-day applies need no admin."""
+    exe, params = elevation_command()
     try:
         rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
         if int(rc) <= 32:
             msgbox("Elevation failed or was cancelled.", APP)
-        # success is silent; verify in About HustleOn
+        else:
+            saved["unhide_done"] = True   # remember the choice; first-run won't ask again
+            persist()
     except Exception as e:
         msgbox(f"Elevation failed: {e}", APP)
 
@@ -490,131 +620,232 @@ def _set_window_icon(win):
         pass
 
 
-def act_about(ic=None, it=None):
-    if _about_open[0]:
-        w = _about_open[0]
-        if w is not True:
-            try:  # already open: raise and focus it (marshalled to its own thread)
-                w.after(0, lambda: (w.deiconify(), w.lift(), w.focus_force()))
-            except Exception:
-                pass
-        return
-    _about_open[0] = True
-    root = None
+def _style_for(win):
+    """Shared dark/light ttk styling. Returns (bg, fg, sub, dark)."""
+    from tkinter import ttk
+    dark = _dark_mode()
+    bg, fg, sub = ("#202020", "#ffffff", "#9a9a9a") if dark else ("#f3f3f3", "#1a1a1a", "#6b6b6b")
+    win.configure(bg=bg)
+    st = ttk.Style(win)
+    if dark:
+        st.theme_use("clam")
+        st.configure("TButton", background="#333333", foreground=fg, bordercolor="#444444",
+                     focuscolor="#333333", padding=(10, 5))
+        st.map("TButton", background=[("active", "#444444")])
+    st.configure("A.TFrame", background=bg)
+    st.configure("K.TLabel", background=bg, foreground=sub, font=("Segoe UI", 10))
+    st.configure("V.TLabel", background=bg, foreground=fg, font=("Segoe UI", 10))
+    st.configure("T.TLabel", background=bg, foreground=fg, font=("Segoe UI", 16, "bold"))
+    st.configure("S.TLabel", background=bg, foreground=sub, font=("Segoe UI", 9))
+    st.configure("A.TCheckbutton", background=bg, foreground=fg, font=("Segoe UI", 10))
+    return bg, fg, sub, dark
+
+
+def _show_window(win, dark):
+    """Dark title bar, centre on the primary work area, then reveal."""
+    win.update_idletasks()
+    if dark:
+        try:
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 20, ctypes.byref(ctypes.c_int(1)), 4)
+        except Exception:
+            pass
     try:
-        import tkinter as tk
-        from tkinter import ttk
-        # The dialog IS the Tk root: no hidden root, nothing to flash.
-        root = tk.Tk()
-        root.withdraw()  # stay hidden until fully laid out and positioned
-        _about_open[0] = root
-        root.title("About HustleOn")
-        root.resizable(False, False)
-        dark = _dark_mode()
-        bg, fg, sub = ("#202020", "#ffffff", "#9a9a9a") if dark else ("#f3f3f3", "#1a1a1a", "#6b6b6b")
-        root.configure(bg=bg)
-        _set_window_icon(root)
+        rc = ctypes.wintypes.RECT()
+        ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rc), 0)
+        ax, ay, aw, ah = rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top
+    except Exception:
+        ax, ay, aw, ah = 0, 0, win.winfo_screenwidth(), win.winfo_screenheight()
+    ww, wh = win.winfo_reqwidth(), win.winfo_reqheight()
+    win.geometry(f"+{ax + (aw - ww) // 2}+{ay + (ah - wh) // 2}")
+    win.attributes("-topmost", True)
+    win.deiconify()
+    win.lift()
+    win.focus_force()
 
-        st = ttk.Style(root)
-        if dark:
-            st.theme_use("clam")
-            st.configure("TButton", background="#333333", foreground=fg, bordercolor="#444444",
-                         focuscolor="#333333", padding=(10, 5))
-            st.map("TButton", background=[("active", "#444444")])
-        st.configure("A.TFrame", background=bg)
-        st.configure("K.TLabel", background=bg, foreground=sub, font=("Segoe UI", 10))
-        st.configure("V.TLabel", background=bg, foreground=fg, font=("Segoe UI", 10))
-        st.configure("T.TLabel", background=bg, foreground=fg, font=("Segoe UI", 16, "bold"))
-        st.configure("S.TLabel", background=bg, foreground=sub, font=("Segoe UI", 9))
 
-        outer = ttk.Frame(root, style="A.TFrame", padding=20)
-        outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="HustleOn", style="T.TLabel").pack(anchor="w")
-        ttk.Label(outer, text=f"Version {core.__version__}", style="S.TLabel").pack(anchor="w", pady=(0, 12))
-        grid = ttk.Frame(outer, style="A.TFrame")
-        grid.pack(fill="x")
-        grid.columnconfigure(1, weight=1)
+_about_win = [None]   # touched only on the UI thread: at most one About dialog
 
-        def _fill():
-            for c in grid.winfo_children():
-                c.destroy()
-            for i, (k, v) in enumerate(_about_rows()):
-                ttk.Label(grid, text=k, style="K.TLabel").grid(row=i, column=0, sticky="nw",
-                                                               padx=(0, 16), pady=2)
-                ttk.Label(grid, text=v, style="V.TLabel", wraplength=300,
-                          justify="left").grid(row=i, column=1, sticky="nw", pady=2)
 
+def _build_about():
+    import tkinter as tk
+    from tkinter import ttk
+    if _about_win[0] is not None:   # already open: raise and focus it
+        w = _about_win[0]
+        try:
+            w.deiconify()
+            w.lift()
+            w.focus_force()
+        except Exception:
+            _about_win[0] = None
+        else:
+            return
+    win = tk.Toplevel(ui.root)
+    _about_win[0] = win
+    win.withdraw()  # stay hidden until fully laid out and positioned
+    win.title("About HustleOn")
+    win.resizable(False, False)
+    bg, fg, sub, dark = _style_for(win)
+    _set_window_icon(win)
+
+    outer = ttk.Frame(win, style="A.TFrame", padding=20)
+    outer.pack(fill="both", expand=True)
+    ttk.Label(outer, text="HustleOn", style="T.TLabel").pack(anchor="w")
+    ttk.Label(outer, text=f"Version {core.__version__}", style="S.TLabel").pack(anchor="w", pady=(0, 12))
+    grid = ttk.Frame(outer, style="A.TFrame")
+    grid.pack(fill="x")
+    grid.columnconfigure(1, weight=1)
+    btns = ttk.Frame(outer, style="A.TFrame")
+    btns.pack(fill="x", pady=(16, 0))
+
+    def _close(_e=None):
+        _about_win[0] = None
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    def _restore():
+        if engine.applied:
+            msgbox("A hold is live. Turn it Off and HustleOn restores your sleep settings "
+                   "automatically.", APP)
+            return
+        res = core.restore_power_defaults()
+        refresh_lid_status()
+        _fill()
+        if not all(ok for _, ok, _ in res):
+            msgbox("Nothing to restore, or some values could not be restored.", APP)
+
+    def _unlock():
+        act_unlock_lid()
         _fill()
 
-        def _close(_e=None):
-            _about_open[0] = False
-            try:
-                root.quit()
-            except Exception:
-                pass
-
-        def _fix_lid():
-            act_enforce()
-            _fill()
-
-        def _restore():
-            res = core.restore_power_defaults()
-            refresh_lid_status()
-            _fill()
-            if not all(ok for _, ok, _ in res):
-                msgbox("Some values could not be restored (Administrator may be required).", APP)
-
-        btns = ttk.Frame(outer, style="A.TFrame")
-        btns.pack(fill="x", pady=(16, 0))
-        for n, (txt, cmd) in enumerate([("Fix lid settings (admin)…", _fix_lid),
-                                        ("Restore sleep defaults", _restore),
-                                        ("Close", _close)]):
+    def _fill():
+        for c in grid.winfo_children():
+            c.destroy()
+        rows = _about_rows()
+        for i, (k, v) in enumerate(rows):
+            ttk.Label(grid, text=k, style="K.TLabel").grid(row=i, column=0, sticky="nw",
+                                                           padx=(0, 16), pady=2)
+            ttk.Label(grid, text=v, style="V.TLabel", wraplength=300,
+                      justify="left").grid(row=i, column=1, sticky="nw", pady=2)
+        hidden = any(k.startswith("Lid close") and v.startswith("hidden") for k, v in rows)
+        for c in btns.winfo_children():
+            c.destroy()
+        specs = []
+        if hidden:   # one-time unlock, only while the lid setting is hidden
+            specs.append(("Unlock lid setting (admin)…", _unlock))
+        specs += [("Restore sleep defaults", _restore), ("Close", _close)]
+        for n, (txt, cmd) in enumerate(specs):
             b = ttk.Button(btns, text=txt, command=cmd, width=22)
             b.grid(row=0, column=n, padx=(0 if n == 0 else 8, 0), sticky="ew")
             btns.columnconfigure(n, weight=1, uniform="b")
-            if n == 2:
+            if txt == "Close":
                 b.focus_set()
-        root.bind("<Return>", _close)
-        root.bind("<Escape>", _close)
-        root.protocol("WM_DELETE_WINDOW", _close)
 
-        root.update_idletasks()
-        if dark:
-            try:
-                hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
-                ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    hwnd, 20, ctypes.byref(ctypes.c_int(1)), 4)
-            except Exception:
-                pass
-        # center on the primary work area (excludes taskbar)
-        try:
-            rc = ctypes.wintypes.RECT()
-            ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rc), 0)
-            ax, ay, aw, ah = rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top
-        except Exception:
-            ax, ay, aw, ah = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-        ww, wh = root.winfo_reqwidth(), root.winfo_reqheight()
-        root.geometry(f"+{ax + (aw - ww) // 2}+{ay + (ah - wh) // 2}")
-        root.attributes("-topmost", True)
-        root.deiconify()
-        root.lift()
-        root.focus_force()
-        root.mainloop()
-    except Exception:
-        _about_open[0] = False
+    _fill()
+    win.bind("<Return>", _close)
+    win.bind("<Escape>", _close)
+    win.protocol("WM_DELETE_WINDOW", _close)
+    _show_window(win, dark)
+
+
+def act_about(ic=None, it=None):
+    if not ui.call(_build_about):
         msgbox(f"HustleOn {core.__version__}\n\n{_about_body()}", "About HustleOn")
-    finally:
-        _about_open[0] = False
-        if root is not None:
-            try:
-                root.destroy()
-            except Exception:
-                pass
+
+
+# ---------- first-run setup ----------
+
+_first_run_win = [None]
+
+
+def _build_first_run():
+    import tkinter as tk
+    from tkinter import ttk
+    if _first_run_win[0] is not None:
+        return
+    win = tk.Toplevel(ui.root)
+    _first_run_win[0] = win
+    win.withdraw()
+    win.title("Welcome to HustleOn")
+    win.resizable(False, False)
+    bg, fg, sub, dark = _style_for(win)
+    _set_window_icon(win)
+    outer = ttk.Frame(win, style="A.TFrame", padding=20)
+    outer.pack(fill="both", expand=True)
+    ttk.Label(outer, text="Quick setup", style="T.TLabel").pack(anchor="w")
+    ttk.Label(outer, text="HustleOn changes your lid/sleep settings only while a hold is on, "
+                          "and puts them back when it ends.", style="S.TLabel",
+              wraplength=380, justify="left").pack(anchor="w", pady=(0, 12))
+
+    lid_text = {"protected": "Lid close: Do Nothing (ready)",
+                "unprotected": "Lid close: will be set to Do Nothing during a hold",
+                "unknown": "Lid close: hidden by Windows (Modern Standby)"}
+    st = core.lid_status()
+    ttk.Label(outer, text=lid_text[st], style="V.TLabel").pack(anchor="w")
+    ttk.Button(outer, text="Open Windows power settings",
+               command=open_power_settings).pack(anchor="w", pady=(4, 8))
+    if st == "unknown" and not saved.get("unhide_done"):
+        ttk.Button(outer, text="Unlock lid setting (admin, one time)…",
+                   command=act_unlock_lid).pack(anchor="w", pady=(0, 8))
+
+    guard_var = tk.BooleanVar(value=engine.guard)
+    auto_var = tk.BooleanVar(value=core.autostart_enabled())
+
+    def _guard():
+        engine.guard = guard_var.get()
+        persist()
+        refresh()
+
+    def _auto():
+        ok, detail = core.set_autostart(auto_var.get())
+        if not ok:
+            auto_var.set(core.autostart_enabled())
+            msgbox(f"Couldn't change Start with Windows: {detail[:100]}", APP)
+        saved["start_with_windows"] = core.autostart_enabled()
+        persist()
+        refresh()
+
+    ttk.Checkbutton(outer, text="Battery guard (pause the hold on low battery)",
+                    variable=guard_var, command=_guard, style="A.TCheckbutton").pack(anchor="w", pady=2)
+    ttk.Checkbutton(outer, text="Start with Windows", variable=auto_var, command=_auto,
+                    style="A.TCheckbutton").pack(anchor="w", pady=2)
+
+    if core.legacy_restore_candidate() is not None:
+        def _legacy():
+            res = core.restore_legacy_backup()
+            msgbox("Previous sleep settings restored." if all(ok for _, ok, _ in res)
+                   else "Couldn't restore all previous settings.", APP)
+        ttk.Button(outer, text="Restore my previous sleep settings",
+                   command=_legacy).pack(anchor="w", pady=(8, 0))
+
+    def _done(_e=None):
+        saved["first_run_done"] = True
+        persist()
+        _first_run_win[0] = None
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    done = ttk.Button(outer, text="Done", command=_done, width=14)
+    done.pack(anchor="e", pady=(16, 0))
+    done.focus_set()
+    win.bind("<Return>", _done)
+    win.protocol("WM_DELETE_WINDOW", _done)
+    _show_window(win, dark)
 
 
 def act_quit(ic=None, it=None):
-    engine.deactivate()
-    persist()
+    persist()                  # captures last_mode while the hold is still live
+    _quitting[0] = True        # nothing may overwrite it with "off" afterwards
+    engine.deactivate("quit")  # releases the hold and restores power settings
+    if not engine.restore_ok:
+        msgbox("HustleOn couldn't restore your sleep settings. They will be restored "
+               "next time it starts.", APP)
+    ui.stop()
     if icon:
         icon.stop()
 
@@ -625,9 +856,12 @@ def build_menu():
     # Caffeine-style labels: modes read as sentences, active mode checked.
     # Parents carry checks so custom values still show state.
     items = []
-    if lid_protected is False:
-        items.append(pystray.MenuItem("⚠ Lid will still sleep — fix in About HustleOn",
-                                      act_about, enabled=False))
+    if lid_state == "unknown":
+        items.append(pystray.MenuItem("Lid status unknown — open Windows power settings",
+                                      open_power_settings))
+    elif lid_state == "unprotected" and engine.mode != "off":
+        items.append(pystray.MenuItem("⚠ Lid will still sleep — open Windows power settings",
+                                      open_power_settings))
     if engine.battery_paused:
         ac, pct = core.get_power_status()
         items.append(pystray.MenuItem(
@@ -648,7 +882,7 @@ def build_menu():
         pystray.MenuItem(interval_label, pystray.Menu(
             *[pystray.MenuItem(_timer_label(m), act_timer(m),
                                checked=lambda it, m=m: engine.mode == "timer"
-                               and getattr(engine, "timer_minutes", None) == m)
+                               and engine.timer_minutes == m)
               for m in TIMER_PRESETS],
             pystray.MenuItem("Custom…", act_timer_custom)),
             checked=lambda it: engine.mode == "timer"),
@@ -671,10 +905,15 @@ def build_menu():
                                checked=lambda it, p=p: engine.guard_threshold == p)
               for p in (10, 15, 20, 30, 40, 50)],
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Also stop when hot (lid closed, best effort)", act_thermal_toggle,
+                             checked=lambda it: engine.thermal_guard),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda it: f"Status: {power_brief()}"
                              + (" — tripped" if engine.battery_paused else ""),
                              None, enabled=False))),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Start with Windows", act_autostart_toggle,
+                         checked=lambda it: core.autostart_enabled()),
         pystray.MenuItem("About HustleOn…", act_about),
         pystray.MenuItem("Quit", act_quit),
     ]
@@ -697,14 +936,20 @@ def heartbeat():
             elif "battery_pause" in events:
                 notify(APP, f"Battery low ({power_brief()}) — hold paused. Plug in, then Resume hold.")
                 persist()
+            elif "thermal" in events:
+                notify(APP, "This PC is running hot with the lid closed — hold ended.")
+                persist()
+            if engine.mode != "off" or events:
                 refresh_lid_status()
+            check_alerts()
             if engine.mode != "off" and not engine.api_ok and api_was_ok:
                 notify(APP, "Windows refused the stay-awake request — hold may be inactive.")
             api_was_ok = engine.api_ok if engine.mode != "off" else True
             refresh()
-        except Exception:
+        except Exception as e:
             # Never skip the hold silently: retry it, escalate on repetition.
             fail_streak += 1
+            core.log(f"heartbeat error: {e}")
             try:
                 engine.reassert()
             except Exception:
@@ -715,6 +960,9 @@ def heartbeat():
 
 def main():
     global icon, _mutex
+    # Defensive: normally handled at import time for the frozen exe, before the mutex.
+    if "--enforce-only" in sys.argv[1:]:
+        raise SystemExit(core.main(["--enforce-only"]))
     # Crisp menus/icons on high-DPI: declare Per-Monitor V2 before any window
     # exists (manifest covers the exe; this covers running from source).
     try:
@@ -725,9 +973,12 @@ def main():
         except Exception:
             pass
     _mutex = ensure_single_instance()
+    core.log(f"HustleOn {core.__version__} starting")
+    core.start_lid_watcher()
+    # Crash/power-loss recovery BEFORE any resume logic.
+    _, rec_ok = core.recover_applied()
     resume_last_mode()
     refresh_lid_status()
-    warn_lid = (lid_protected is False)
     icon = TrayIcon(APP, ICONS["off"], tooltip(), build_menu())
     threading.Thread(target=heartbeat, daemon=True).start()
     refresh()
@@ -737,8 +988,11 @@ def main():
             ic.visible = True
         except Exception:
             pass
-        if warn_lid:
-            notify(APP, "HustleOn can't hold the lid yet — open About HustleOn → Fix lid settings.")
+        if not rec_ok:
+            notify(APP, "Couldn't restore earlier sleep settings. Open About > Restore sleep defaults.")
+        check_alerts()
+        if not saved.get("first_run_done"):
+            ui.call(_build_first_run)
 
     icon.run(setup=_setup)
 

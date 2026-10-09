@@ -55,7 +55,6 @@ DEFAULTS = {
     "screen_on": True,
     "battery_guard": True,
     "battery_threshold": 30,
-    "last_mode": None,          # resumable {"mode","until_iso","timer_minutes"} or None
     "start_with_windows": False,
     "thermal_guard": False,     # opt-in, best effort
     "thermal_threshold": 90,    # deg C
@@ -748,6 +747,18 @@ def load_settings():
     if s.get("mode") not in (MODE_OFF, MODE_ON, MODE_TIMER, MODE_UNTIL):
         s["mode"] = MODE_OFF
     return s
+
+
+def resume_plan(saved):
+    """Resumable mode dict from settings: `last_mode`, else (pre-1.1 files) the
+    saved live `mode`. Explicit Off / expiry leave neither -> None."""
+    last = saved.get("last_mode")
+    if isinstance(last, dict) and last.get("mode") in (MODE_ON, MODE_TIMER, MODE_UNTIL):
+        return last
+    if "last_mode" not in saved and saved.get("mode") in (MODE_ON, MODE_TIMER, MODE_UNTIL):
+        return {"mode": saved["mode"], "until_iso": saved.get("until_iso"),
+                "timer_minutes": saved.get("timer_minutes")}
+    return None
 
 
 def save_settings(s):

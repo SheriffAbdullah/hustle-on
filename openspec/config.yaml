@@ -7,10 +7,12 @@ context: |
   Layout: hustleon_core.py (engine, powercfg, battery, settings, CLI main), hustleon_tray.py
   (tray UI, imports core), hustleon.py (CLI wrapper), icons/ (generated at runtime).
   Conventions: Windows-only (Win32 via ctypes, powercfg); core stays third-party-free; tray alerts
-  only (success is silent); state in settings.json next to exe (fallback %APPDATA%/hustle-on);
-  machine power config (powercfg) is never auto-reverted except by explicit Restore; no
-  autostart/service in scope. Specs describe ACTUAL behavior; known drift is recorded in each
-  spec Purpose and fixed via a change, not silently.
+  only (success is silent); state in %APPDATA%/hustle-on (settings.json, applied.json, log.txt);
+  machine power config (lid/sleep/hibernate/display) is applied only while a hold is live and is
+  restored on every hold end, with crash recovery from applied.json; "Start with Windows"
+  (HKCU Run) is in scope, a Windows service is not. Tests must mock powercfg,
+  SetThreadExecutionState, winreg and battery - never touch real power settings. Specs describe
+  ACTUAL behavior; known drift is recorded in each spec Purpose and fixed via a change, not silently.
 
 # Project context (optional)
 # Add only constraints that should guide OpenSpec artifacts and workflows.

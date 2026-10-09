@@ -178,7 +178,7 @@ def test_menu_lid_item_by_status(tray):
     tray.lid_state = "unprotected"      # engine off: user's own setting, no warning
     assert not any("Lid" in t for t in _texts(tray.build_menu()))
     tray.engine.mode = "on"
-    assert any("Lid will still sleep" in t for t in _texts(tray.build_menu()))
+    assert any("Lid close will still sleep this PC" in t for t in _texts(tray.build_menu()))
     tray.engine.mode = "off"
 
 

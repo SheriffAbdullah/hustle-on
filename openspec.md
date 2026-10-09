@@ -56,7 +56,8 @@ lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
   - `Battery guard ▸` → ☑ Enabled / Threshold ▸ 10/15/20/30% / status line (disabled info item)
   - separator
   - `Enforce lid settings (admin)…` → relaunches elevate path, reports OK/Needs Admin
-  - `Check settings` → balloon/dialog summary (sleep/lid/display, Modern Standby note)
+  - `About HustleOn…` → dialog with version, live status and short power summary
+    (sleep/display/lid, Modern Standby note)
   - `Quit`
 - **Disabled items with reasons**: e.g. `Until 08:00 (passed)` disabled; battery status line disabled info.
 - **Tooltip** (short, branded): `HustleOn · Awake indefinitely · AC 100%` / `HustleOn · 1h12m left · Batt 64%` / `HustleOn · Off · AC` / `HustleOn · Paused · Batt 15%`.

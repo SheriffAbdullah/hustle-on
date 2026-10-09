@@ -151,6 +151,10 @@ class TrayIcon(pystray.Icon):
         import ctypes
         win32, wintypes = _backend.win32, _backend.wintypes
         if self._menu_handle and lparam in (win32.WM_LBUTTONUP, win32.WM_RBUTTONUP):
+            try:
+                refresh()  # live battery/mode data: menu never shows a stale snapshot
+            except Exception:
+                pass
             # TrackPopupMenuEx misbehaves unless our window is foreground
             win32.SetForegroundWindow(self._hwnd)
             point = wintypes.POINT()

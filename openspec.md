@@ -44,6 +44,9 @@ lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
   (left or right) opens the popup menu. No double-click action (backend delivers no
   DBLCLK without CS_DBLCLKS). Toggling happens only via menu items. `default=` flags
   remain as bold highlight on the recommended item.
+- **Fresh-on-open**: the menu, tooltip and icon are rebuilt at the moment the menu
+  opens (live `GetSystemPowerStatus` poll), so battery/mode data is never a stale
+  30s-heartbeat snapshot. Heartbeat remains the backstop for expiry/guard/icon.
 - **Right-click menu** (Caffeine-style labels):
   - `Keep awake indefinitely` (checked when on; double-click default when off)
   - `Keep awake on interval ▸` → 30 minutes / 1 hour / 2 hours / 8 hours / Custom…

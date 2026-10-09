@@ -16,6 +16,7 @@ def disc(color):
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.ellipse([4, 4, 60, 60], fill=color)
+    d.ellipse([4, 4, 60, 60], outline=(0, 0, 0, 100), width=2)  # rim: legible on light taskbars
     return img, d
 
 

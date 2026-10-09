@@ -47,13 +47,14 @@ def ensure_single_instance():
 
 
 # ---------- icons: user-specced set (basic circle; red dot = LIVE only) ----------
-# off: gray power · on: orange infinity · timer: blue hourglass ·
-# until: purple wall clock · paused: gray pause-bars (mirrors icons/render_gallery.py)
+# off: gray power · on: green infinity · timer: green hourglass ·
+# until: green wall clock · paused: gray pause-bars (mirrors icons/render_gallery.py)
 
 def _disc(color):
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.ellipse([4, 4, 60, 60], fill=color)
+    d.ellipse([4, 4, 60, 60], outline=(0, 0, 0, 100), width=2)  # rim: legible on light taskbars
     return img, d
 
 
@@ -112,6 +113,11 @@ engine = core.Engine(screen_on=saved.get("screen_on", True),
                      guard=saved.get("battery_guard", True),
                      guard_threshold=saved.get("battery_threshold", 30))
 icon = None  # pystray Icon, set in main
+_mutex = None  # single-instance handle, module-held so lifetime is explicit
+_heartbeat_wake = threading.Event()
+_last_menu_key = [None]
+lid_protected = None  # True/False once checked; None = unknown
+_about_open = [False]
 
 
 def persist():
@@ -136,9 +142,21 @@ def resume_last_mode():
         if dl and dl > datetime.datetime.now():
             engine.mode = mode
             engine.deadline = dl
+            engine.timer_minutes = saved.get("timer_minutes", 60)
             engine.reassert()
         # else: expired while away -> stay off
     persist()
+
+
+def refresh_lid_status():
+    """Cache whether lid-close is truly Do Nothing (read-back, not rc)."""
+    global lid_protected
+    try:
+        s = core.power_summary()["lid"]
+        parts = [p.strip().lower() for p in s.split("/")]
+        lid_protected = len(parts) == 2 and all("do nothing" in p for p in parts)
+    except Exception:
+        lid_protected = None
 
 
 # ---------- click behavior ----------
@@ -187,9 +205,18 @@ def msgbox(text, title=APP):
     ctypes.windll.user32.MessageBoxW(None, text, title, 0x40)
 
 
+def _menu_key():
+    return (engine.mode, engine.deadline.isoformat() if engine.deadline else None,
+            engine.screen_on, engine.guard, engine.guard_threshold,
+            engine.battery_paused, engine.api_ok, lid_protected,
+            getattr(engine, "timer_minutes", None))
+
+
 def refresh():
-    """Refresh icon art + tooltip + menu. Safe from any thread."""
+    """Icon art + tooltip always; menu rebuilt only on state change (avoids
+    mid-navigation rebuilds). Wakes the heartbeat for an immediate tick."""
     global icon
+    _heartbeat_wake.set()
     if not icon:
         return
     if engine.battery_paused:
@@ -203,14 +230,14 @@ def refresh():
     else:
         icon.icon = ICONS["timed"]
     icon.title = tooltip()
-    try:
-        icon.menu = build_menu()
-    except Exception:
-        pass
-    try:
-        icon.update_menu()
-    except Exception:
-        pass
+    key = _menu_key()
+    if key != _last_menu_key[0]:
+        _last_menu_key[0] = key
+        try:
+            icon.menu = build_menu()
+            icon.update_menu()
+        except Exception:
+            pass
 
 
 def fmt_remaining():
@@ -271,6 +298,37 @@ def act_timer(minutes):
         persist()
         refresh()
     return _run
+
+
+def act_resume(ic=None, it=None):
+    if engine.guard:
+        ac, pct = core.get_power_status()
+        if ac is False and pct is not None and pct <= engine.guard_threshold:
+            notify(APP, f"Still on battery at {pct}% (guard {engine.guard_threshold}%) — plug in to resume.")
+            return
+    engine.resume_snapshot()
+    persist()
+    refresh()
+
+
+def _timer_label(m):
+    if m == 60:
+        return "1 hour"
+    if m % 60 == 0:
+        return f"{m // 60} hours"
+    return f"{m} minutes"
+
+
+def _until_suffix(hhmm):
+    """' (tomorrow)' when the wall-clock time already passed today."""
+    try:
+        h, mi = hhmm.split(":")
+        now = datetime.datetime.now()
+        if now.replace(hour=int(h), minute=int(mi), second=0, microsecond=0) <= now:
+            return " (tomorrow)"
+    except Exception:
+        pass
+    return ""
 
 
 def _tk_root():
@@ -341,6 +399,8 @@ def act_toggle_screen(ic=None, it=None):
 
 def act_guard_toggle(ic=None, it=None):
     engine.guard = not engine.guard
+    if not engine.guard:
+        engine.battery_paused = False  # explicit user action clears the latch
     persist()
     refresh()
 
@@ -378,7 +438,12 @@ def _about_body():
     if engine.battery_paused:
         status += " (paused: battery low)"
     ps = core.power_summary()
+    if engine.mode != "off" and engine.last_reassert:
+        hold = f"live (re-asserted {engine.last_reassert:%H:%M:%S})"
+    else:
+        hold = engine.mode
     return (f"Status: {status}\n"
+            f"Hold: {hold}\n"
             f"Display: {'kept on' if engine.screen_on else 'may sleep (CPU stays awake)'}\n"
             f"Battery guard: {'on (' + str(engine.guard_threshold) + '%)' if engine.guard else 'off'} · {power_brief()}\n"
             f"Sleep after: {ps['sleep']}\n"
@@ -387,6 +452,9 @@ def _about_body():
 
 
 def act_about(ic=None, it=None):
+    if _about_open[0]:
+        return
+    _about_open[0] = True
     try:
         import tkinter as tk
         root = tk.Tk()
@@ -405,18 +473,39 @@ def act_about(ic=None, it=None):
             act_enforce()
             body.config(text=_about_body())
 
+        def _close():
+            _about_open[0] = False
+            for _w in (w, root):
+                try:
+                    _w.destroy()
+                except Exception:
+                    pass
+
+        def _restore():
+            res = core.restore_power_defaults()
+            refresh_lid_status()
+            body.config(text=_about_body())
+            if not all(ok for _, ok, _ in res):
+                msgbox("Some values could not be restored (Administrator may be required).",
+                       APP)
+
         btns = tk.Frame(w)
         btns.pack(pady=(0, 14))
-        tk.Button(btns, text="Fix lid settings (admin)…", width=24,
-                  command=_fix_lid).pack(side="left", padx=6)
-        tk.Button(btns, text="OK", width=12,
-                  command=lambda: (w.destroy(), root.destroy())).pack(side="left", padx=6)
+        tk.Button(btns, text="Fix lid settings (admin)…", width=22,
+                  command=_fix_lid).pack(side="left", padx=4)
+        tk.Button(btns, text="Restore sleep defaults", width=20,
+                  command=_restore).pack(side="left", padx=4)
+        tk.Button(btns, text="OK", width=8,
+                  command=_close).pack(side="left", padx=4)
+        w.bind("<Escape>", lambda e: _close())
+        w.protocol("WM_DELETE_WINDOW", _close)
         w.update_idletasks()
         x = w.winfo_pointerx() - w.winfo_reqwidth() // 2
         y = w.winfo_pointery() - w.winfo_reqheight() // 2
         w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
         root.mainloop()
     except Exception:
+        _about_open[0] = False
         msgbox(f"HustleOn {core.__version__}\n\n{_about_body()}", "About HustleOn")
 
 
@@ -430,28 +519,41 @@ def act_quit(ic=None, it=None):
 # ---------- menu ----------
 
 def build_menu():
-    # Caffeine-style labels: modes read as sentences, active mode checked,
-    # double-click (default item) flips on/off.
+    # Caffeine-style labels: modes read as sentences, active mode checked.
+    # Parents carry checks so custom values still show state.
+    items = []
+    if lid_protected is False:
+        items.append(pystray.MenuItem("⚠ Lid will still sleep — fix in About HustleOn",
+                                      act_about, enabled=False))
+    if engine.battery_paused:
+        ac, pct = core.get_power_status()
+        items.append(pystray.MenuItem(
+            f"Paused — battery {pct if pct is not None else '?'}%. Plug in, then resume.",
+            None, enabled=False))
+        items.append(pystray.MenuItem("Resume hold", act_resume))
+        items.append(pystray.Menu.SEPARATOR)
     interval_label = "Keep awake on interval"
     if engine.mode == "timer" and fmt_remaining():
         interval_label += f" ({fmt_remaining()} left)"
     until_label = "Keep awake until expiration date and time"
     if engine.mode == "until" and engine.deadline:
         until_label += f" (until {engine.deadline:%a %H:%M})"
-    return pystray.Menu(
+    items += [
         pystray.MenuItem("Keep awake indefinitely", act_on,
                          checked=lambda it: engine.mode == "on",
                          default=(engine.mode == "off")),
         pystray.MenuItem(interval_label, pystray.Menu(
-            *[pystray.MenuItem(f"{m // 60} hour(s)" if m % 60 == 0 else f"{m} minutes",
-                               act_timer(m),
+            *[pystray.MenuItem(_timer_label(m), act_timer(m),
                                checked=lambda it, m=m: engine.mode == "timer"
                                and getattr(engine, "timer_minutes", None) == m)
               for m in TIMER_PRESETS],
-            pystray.MenuItem("Custom…", act_timer_custom))),
+            pystray.MenuItem("Custom…", act_timer_custom)),
+            checked=lambda it: engine.mode == "timer"),
         pystray.MenuItem(until_label, pystray.Menu(
-            *[pystray.MenuItem(label, act_until(hhmm)) for label, hhmm in UNTIL_PRESETS],
-            pystray.MenuItem("Custom…", act_until_custom))),
+            *[pystray.MenuItem(f"{label}{_until_suffix(hhmm)}", act_until(hhmm))
+              for label, hhmm in UNTIL_PRESETS],
+            pystray.MenuItem("Custom…", act_until_custom)),
+            checked=lambda it: engine.mode == "until"),
         pystray.MenuItem("Off (keep using the selected power plan)", act_off,
                          checked=lambda it: engine.mode == "off",
                          default=(engine.mode != "off")),
@@ -461,42 +563,55 @@ def build_menu():
         pystray.MenuItem("Battery guard", pystray.Menu(
             pystray.MenuItem("Enabled", act_guard_toggle,
                              checked=lambda it: engine.guard),
-            pystray.MenuItem("Threshold", pystray.Menu(
-                *[pystray.MenuItem(f"{p}%", act_guard_threshold(p),
-                                   checked=lambda it, p=p: engine.guard_threshold == p)
-                  for p in (10, 15, 20, 30)])),
+            pystray.Menu.SEPARATOR,
+            *[pystray.MenuItem(f"{p}%", act_guard_threshold(p),
+                               checked=lambda it, p=p: engine.guard_threshold == p)
+              for p in (10, 15, 20, 30, 40, 50)],
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda it: f"Status: {power_brief()}"
                              + (" — tripped" if engine.battery_paused else ""),
                              None, enabled=False))),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("About HustleOn…", act_about),
         pystray.MenuItem("Quit", act_quit),
-    )
+    ]
+    return pystray.Menu(*items)
 
 
 # ---------- heartbeat ----------
 
 def heartbeat():
     api_was_ok = True
+    fail_streak = 0
     while True:
-        threading.Event().wait(TICK_SECONDS)
+        _heartbeat_wake.wait(TICK_SECONDS)
+        _heartbeat_wake.clear()
         try:
             events = engine.tick()
+            fail_streak = 0
             if "expired" in events:
                 persist()  # completed as asked: silent
             elif "battery_pause" in events:
-                notify(APP, f"Battery low ({power_brief()}) — hold paused. Plug in to resume.")
+                notify(APP, f"Battery low ({power_brief()}) — hold paused. Plug in, then Resume hold.")
                 persist()
-            if engine.mode != MODE_OFF and not engine.api_ok and api_was_ok:
+                refresh_lid_status()
+            if engine.mode != "off" and not engine.api_ok and api_was_ok:
                 notify(APP, "Windows refused the stay-awake request — hold may be inactive.")
-            api_was_ok = engine.api_ok if engine.mode != MODE_OFF else True
+            api_was_ok = engine.api_ok if engine.mode != "off" else True
             refresh()
         except Exception:
-            pass
+            # Never skip the hold silently: retry it, escalate on repetition.
+            fail_streak += 1
+            try:
+                engine.reassert()
+            except Exception:
+                pass
+            if fail_streak == 3:
+                notify(APP, "HustleOn hit a repeated internal error — hold may be stale. Restart the app.")
 
 
 def main():
-    global icon
+    global icon, _mutex
     # Crisp menus/icons on high-DPI: declare Per-Monitor V2 before any window
     # exists (manifest covers the exe; this covers running from source).
     try:
@@ -506,12 +621,23 @@ def main():
             ctypes.windll.user32.SetProcessDPIAware()
         except Exception:
             pass
-    ensure_single_instance()
+    _mutex = ensure_single_instance()
     resume_last_mode()
+    refresh_lid_status()
+    warn_lid = (lid_protected is False)
     icon = TrayIcon(APP, ICONS["off"], tooltip(), build_menu())
     threading.Thread(target=heartbeat, daemon=True).start()
     refresh()
-    icon.run()
+
+    def _setup(ic):
+        try:
+            ic.visible = True
+        except Exception:
+            pass
+        if warn_lid:
+            notify(APP, "HustleOn can't hold the lid yet — open About HustleOn → Fix lid settings.")
+
+    icon.run(setup=_setup)
 
 
 if __name__ == "__main__":

@@ -11,15 +11,15 @@ Autostart is explicitly out of scope for v1 (deferred).
 |---|---|---|
 | `off` | Passive. Execution-state hold released. | — |
 | `on` | Indefinite hold. | Manual / quit / battery auto-off |
-| `timer` | Hold for N minutes from activation. | Auto → `off` + notification |
-| `until` | Hold until wall-clock datetime (today, or tomorrow if time passed). | Auto → `off` + notification |
+| `timer` | Hold for N minutes from activation. | Auto → `off`, silent (icon shows Off) |
+| `until` | Hold until wall-clock datetime (today, or tomorrow if time passed — preset labels say so). | Auto → `off`, silent (icon shows Off) |
 
 Hold = `SetThreadExecutionState(ES_CONTINUOUS \| ES_SYSTEM_REQUIRED \| ES_AWAYMODE_REQUIRED [+ ES_DISPLAY_REQUIRED])`,
-re-asserted every 60s (heartbeat). Only the API hold is session state; powercfg
+re-asserted every 30s (heartbeat; mode actions wake it immediately). Only the API hold is session state; powercfg
 lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
 
 ## 3. Battery awareness (on by default)
-- Poll `GetSystemPowerStatus` (ctypes, no new dep) every 60s (same heartbeat).
+- Poll `GetSystemPowerStatus` (ctypes, no new dep) every heartbeat (30s).
 - Rule: if on DC (unplugged) AND battery % ≤ threshold (default 30%) AND mode != `off`
   → auto-switch to `off` + notification "Battery low — hustle-on paused".
 - Manual re-enable while below threshold is allowed but re-triggers the rule on next
@@ -56,16 +56,15 @@ lid/sleep enforcement is machine config and is NOT reverted on expiry/off/quit.
   - `Off (keep using the selected power plan)` (checked when off; double-click default when on)
   - separator
   - ☑ `Keep screen on` (default on)
-  - `Battery guard ▸` → ☑ Enabled / Threshold ▸ 10/15/20/30% / status line (disabled info item)
+  - `Battery guard ▸` → ☑ Enabled / 10/15/20/30/40/50% radios / status line (disabled info item)
   - separator
-  - `Enforce lid settings (admin)…` → relaunches elevate path, reports OK/Needs Admin
   - `About HustleOn…` → dialog with version, live status and short power summary
     (sleep/display/lid, Modern Standby note), plus a `Fix lid settings (admin)…`
     button that runs the elevated powercfg enforcement (lid→Do Nothing,
     sleep/display→Never) and refreshes the summary. The menu itself stays
     Caffeine-clean: modes + screen + guard + About + Quit.
   - `Quit`
-- **Disabled items with reasons**: e.g. `Until 08:00 (passed)` disabled; battery status line disabled info.
+- **Disabled items with reasons**: battery status line + paused-resume context + lid warning (disabled info); past `until` presets are labeled `(tomorrow)`, never silently armed.
 - **Tooltip** (short, branded): `HustleOn · Awake indefinitely · AC 100%` / `HustleOn · 1h12m left · Batt 64%` / `HustleOn · Off · AC` / `HustleOn · Paused · Batt 15%`.
 - **Notifications — alerts only, success is silent**: battery auto-off, Windows refusing
   the stay-awake request (`api_ok` tracked in engine, alerted once per hold), bad `until`
@@ -88,7 +87,9 @@ v1 = applies to new process only (documented); single-instance handoff is future
   `ShellExecuteW ... runas` of the exe with `--enforce-only`; result relayed via exit code.
 - **Lock screen**: API hold persists (process lives in user session); verify note in README.
   No service in v1.
-- **Sleep/hibernate.api**: heartbeat 60s also re-polls battery + deadline checks.
+- **Sleep/hibernate/api**: heartbeat (30s) also re-polls battery + deadline checks; mode
+  actions wake it immediately. `until` deadlines are naive local time; a TZ change
+  across a restart reinterprets a resumed deadline.
 - **Time**: `until` uses local time; DST/zone change mid-hold = deadline stays absolute ISO.
 
 ## 8. Build & repo layout

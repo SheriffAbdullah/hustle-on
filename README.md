@@ -4,16 +4,19 @@ Keep Windows running with the lid closed, as if open. Caffeine-style tray app.
 No key-jiggling — uses `SetThreadExecutionState` + `powercfg` enforcement.
 
 ## Use (recommended)
-Double-click **`dist/hustle-on.exe`** — lives in the tray (up-arrow area):
-- Double-click icon = on/off toggle. Right-click = full menu.
-- Timer (30m/1h/2h/8h/custom), Until (13:00/18:00/08:00/custom HH:MM).
-- `Keep screen on` toggle, `Battery guard` (auto-pause on low battery, default 30%).
-- `About HustleOn…` for version, live status, and a `Fix lid settings` button (one-time UAC fix).
-- Resumes last mode on launch. Single instance. `Quit` restores normal sleep.
+Run **`dist/hustle-on.exe`** (or the installed copy) — it lives in the tray (up-arrow area):
+1. **Tap the icon** → menu opens. Pick `Keep awake indefinitely`, a Timer, or an Until time.
+2. **First run:** tap → `About HustleOn…` → `Fix lid settings (admin)…`, approve the UAC
+   prompt. Until the lid reads "Do Nothing", closing it can still sleep the PC —
+   the menu shows a ⚠ warning line while that's true. (On HP Modern Standby schemes
+   the lid slot is hidden; alternatively set `Settings > System > Power & battery > Lid controls > Do Nothing`.)
+3. Close the lid. Everything keeps running. Hover the icon for live status.
 
-First run: right-click → `Enforce lid settings (admin)…`, or
-`Settings > System > Power & battery > Lid controls > Do Nothing`
-(required on HP Modern Standby schemes that hide the lid action).
+- Timers: 30 minutes / 1 / 2 / 8 hours / custom. Until: Lunch 13:00 / EOD 18:00 / Morning 08:00 / custom HH:MM (past times mean tomorrow, and say so).
+- `Keep screen on` toggle, `Battery guard` (auto-pauses on low battery, default 30%; `Resume hold` in the menu when plugged back in).
+- Resumes last mode on launch (autostart via the Startup shortcut). Single instance.
+- `Quit` releases the stay-awake hold but **leaves your power settings as they are**.
+  To undo them: `About HustleOn…` → `Restore sleep defaults`.
 
 ## CLI / source
 ```

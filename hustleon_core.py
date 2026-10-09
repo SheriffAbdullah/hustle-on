@@ -43,11 +43,18 @@ DEFAULTS = {
 
 # ---------- low-level ----------
 
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+
 def set_execution_state(flags):
+    """Returns (ret, ok). A 0 return with error 0 is SUCCESS (previous state
+    was 0) — the classic Win32 pitfall is testing `ret != 0` alone."""
     try:
-        return ctypes.windll.kernel32.SetThreadExecutionState(flags)
+        ctypes.set_last_error(0)
+        ret = _kernel32.SetThreadExecutionState(flags)
+        return ret, (ret != 0 or ctypes.get_last_error() == 0)
     except Exception:
-        return 0
+        return 0, False
 
 
 def hold_flags(screen_on):
@@ -81,7 +88,16 @@ def unhide_lid_setting():
 
 
 def enforce_power_settings():
+    # First run snapshots current values so restore_power_defaults() can undo us.
     results = []
+    try:
+        bp = _backup_path()
+        if not os.path.exists(bp):
+            with open(bp, "w") as f:
+                json.dump(_snapshot_current(), f, indent=2)
+            results.append(("saved current settings snapshot (for Restore)", True, bp))
+    except Exception as e:
+        results.append(("saved current settings snapshot (for Restore)", False, str(e)))
     lid_ok = True
     for scope, flag in (("AC lid", "/setacvalueindex"), ("DC lid", "/setdcvalueindex")):
         ok, detail = run_powercfg([flag, "SCHEME_CURRENT", SUB_BUTTONS, LIDACTION, "0"])
@@ -106,6 +122,17 @@ def enforce_power_settings():
         results.append((scope + " = Never", ok, d))
     ok, d = run_powercfg(["/setactive", "SCHEME_CURRENT"])
     results.append(("scheme re-activated", ok, d))
+    # Read-back: "OK" from powercfg can be a silent no-op on schemes that hide
+    # the setting (Modern Standby). Verify the load-bearing lid value.
+    v = _query_index(SUB_BUTTONS, LIDACTION)
+    if v and all((x or "").lower() == "0x00000000" for x in v):
+        results.append(("lid verified: Do Nothing on AC+DC (read-back OK)", True, ""))
+    elif v is None:
+        results.append(("lid NOT verifiable on this scheme — see About HustleOn", True,
+                        "setting hidden; confirm in Windows Settings"))
+    else:
+        results.append((f"lid read-back mismatch {v} — see About HustleOn", False,
+                        "verify failed"))
     return results
 
 
@@ -146,6 +173,45 @@ def _fmt_action(idx):
     return {"0x00000000": "Do nothing", "0x00000001": "Sleep",
             "0x00000002": "Hibernate", "0x00000003": "Shut down"}.get(
                 (idx or "").lower(), idx if idx else "?")
+
+
+def _backup_path():
+    return os.path.join(os.path.dirname(settings_path()), "defaults_backup.json")
+
+
+def _snapshot_current():
+    return {"sleep": _query_index(SUB_SLEEP, STANDBYIDLE),
+            "hibernate": _query_index(SUB_SLEEP, HIBERNATEIDLE),
+            "display": _query_index(SUB_VIDEO, VIDEOIDLE),
+            "lid": _query_index(SUB_BUTTONS, LIDACTION)}
+
+
+def restore_power_defaults():
+    """Restore the pre-enforce snapshot. Returns [(desc, ok, detail)]."""
+    results = []
+    try:
+        with open(_backup_path()) as f:
+            snap = json.load(f)
+    except Exception:
+        return [("no saved snapshot — nothing to restore (enforce never ran)", False, "")]
+    mapping = {"sleep": (SUB_SLEEP, STANDBYIDLE), "hibernate": (SUB_SLEEP, HIBERNATEIDLE),
+               "display": (SUB_VIDEO, VIDEOIDLE), "lid": (SUB_BUTTONS, LIDACTION)}
+    for key, (sub, setting) in mapping.items():
+        vals = snap.get(key) if isinstance(snap, dict) else None
+        if not vals or vals[0] is None or vals[1] is None:
+            results.append((f"{key}: no snapshot value, skipped", False, "unknown"))
+            continue
+        try:
+            ac, dc = str(int(vals[0], 16)), str(int(vals[1], 16))
+        except (ValueError, TypeError):
+            results.append((f"{key}: snapshot unreadable, skipped", False, str(vals)))
+            continue
+        ok1, d1 = run_powercfg(["/setacvalueindex", "SCHEME_CURRENT", sub, setting, ac])
+        ok2, d2 = run_powercfg(["/setdcvalueindex", "SCHEME_CURRENT", sub, setting, dc])
+        results.append((f"{key} restored to {ac}/{dc} (AC/DC)", ok1 and ok2, (d1 + d2)[:200]))
+    ok, d = run_powercfg(["/setactive", "SCHEME_CURRENT"])
+    results.append(("scheme re-activated", ok, d))
+    return results
 
 
 def power_summary():
@@ -264,14 +330,16 @@ def save_settings(s):
 # ---------- mode engine ----------
 
 class Engine:
-    def __init__(self, screen_on=True, guard=True, guard_threshold=20):
+    def __init__(self, screen_on=True, guard=True, guard_threshold=30):
         self.screen_on = screen_on
         self.guard = guard
         self.guard_threshold = guard_threshold
         self.mode = MODE_OFF
         self.deadline = None  # datetime for timer/until
         self.battery_paused = False
+        self.paused_snapshot = None  # (mode, deadline, timer_minutes) saved at auto-pause
         self.api_ok = True  # False when Windows refused the last hold request
+        self.last_reassert = None  # datetime of last successful hold assertion
 
     def activate(self, mode, minutes=None, until=None):
         now = datetime.datetime.now()
@@ -285,7 +353,9 @@ class Engine:
         self.mode = mode
         self.battery_paused = False
         if mode != MODE_OFF:
-            self.api_ok = set_execution_state(hold_flags(self.screen_on)) != 0
+            _, self.api_ok = set_execution_state(hold_flags(self.screen_on))
+            if self.api_ok:
+                self.last_reassert = datetime.datetime.now()
 
     def deactivate(self):
         self.mode = MODE_OFF
@@ -294,7 +364,24 @@ class Engine:
 
     def reassert(self):
         if self.mode != MODE_OFF:
-            self.api_ok = set_execution_state(hold_flags(self.screen_on)) != 0
+            _, self.api_ok = set_execution_state(hold_flags(self.screen_on))
+            if self.api_ok:
+                self.last_reassert = datetime.datetime.now()
+
+    def resume_snapshot(self):
+        """Re-arm whatever was live at auto-pause (or plain on)."""
+        snap = self.paused_snapshot
+        self.paused_snapshot = None
+        self.battery_paused = False
+        if snap and snap[0] in (MODE_TIMER, MODE_UNTIL) and snap[1] \
+                and snap[1] > datetime.datetime.now():
+            if snap[0] == MODE_TIMER:
+                self.timer_minutes = snap[2] or 60
+                self.activate(MODE_TIMER, minutes=self.timer_minutes)
+            else:
+                self.activate(MODE_UNTIL, until=snap[1])
+        else:
+            self.activate(MODE_ON)
 
     def remaining(self, now=None):
         if self.mode in (MODE_TIMER, MODE_UNTIL) and self.deadline:
@@ -312,6 +399,8 @@ class Engine:
         if self.guard and self.mode != MODE_OFF:
             ac, pct = get_power_status()
             if ac is False and pct is not None and pct <= self.guard_threshold:
+                self.paused_snapshot = (self.mode, self.deadline,
+                                        getattr(self, "timer_minutes", None))
                 self.deactivate()
                 self.battery_paused = True
                 events.append("battery_pause")
@@ -346,6 +435,18 @@ def main(argv=None):
     ap.add_argument("--until", metavar="HH:MM")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = ap.parse_args(argv)
+
+    # Validate BEFORE touching any machine config.
+    if args.timer is not None and args.timer <= 0:
+        print("--timer needs a positive number of minutes.", file=sys.stderr)
+        return 2
+    until_dt = None
+    if args.until:
+        try:
+            until_dt = _parse_until(args.until)
+        except Exception:
+            print("--until needs HH:MM (24h).", file=sys.stderr)
+            return 2
 
     if args.check:
         print(check_settings_text())
@@ -382,7 +483,7 @@ def main(argv=None):
         eng.activate(MODE_TIMER, minutes=args.timer)
         print(f"Holding for {args.timer} min (until {eng.deadline:%H:%M}). Ctrl+C to stop.")
     elif args.until:
-        eng.activate(MODE_UNTIL, until=_parse_until(args.until))
+        eng.activate(MODE_UNTIL, until=until_dt)
         print(f"Holding until {eng.deadline:%Y-%m-%d %H:%M}. Ctrl+C to stop.")
     else:
         eng.activate(MODE_ON)

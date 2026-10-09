@@ -26,9 +26,10 @@ APP = "hustle-on"
 TICK_SECONDS = 30
 
 C_OFF = (128, 128, 128, 255)
-C_ON = (46, 204, 113, 255)
-C_TIMED = (52, 152, 219, 255)
-C_PAUSED = (231, 76, 60, 255)
+C_ON = (230, 126, 34, 255)      # orange: indefinitely on
+C_TIMED = (52, 152, 219, 255)   # blue: timer
+C_UNTIL = (155, 89, 182, 255)   # purple: until date/time
+C_PAUSED = (231, 76, 60, 255)   # red live-dot (live states only)
 
 TIMER_PRESETS = [30, 60, 120, 480]
 UNTIL_PRESETS = [("Lunch 13:00", "13:00"), ("EOD 18:00", "18:00"), ("Morning 08:00", "08:00")]
@@ -45,21 +46,63 @@ def ensure_single_instance():
     return m
 
 
-# ---------- icons: white power glyph on solid disc (legible at 16px) ----------
+# ---------- icons: user-specced set (basic circle; red dot = LIVE only) ----------
+# off: gray power · on: orange infinity · timer: blue hourglass ·
+# until: purple wall clock · paused: gray pause-bars (mirrors icons/render_gallery.py)
 
-def make_icon(color, paused=False):
+def _disc(color):
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.ellipse([4, 4, 60, 60], fill=color)
-    d.arc([19, 19, 45, 45], start=300, end=240, fill=(255, 255, 255, 255), width=6)
-    d.line([32, 13, 32, 33], fill=(255, 255, 255, 255), width=6)
-    if paused:
-        d.ellipse([40, 40, 60, 60], fill=C_PAUSED)
+    return img, d
+
+
+def _live_dot(img):
+    ImageDraw.Draw(img).ellipse([40, 40, 60, 60], fill=C_PAUSED)
     return img
 
 
-ICONS = {"off": make_icon(C_OFF), "on": make_icon(C_ON),
-         "timed": make_icon(C_TIMED), "paused": make_icon(C_OFF, paused=True)}
+def _icon_off():
+    img, d = _disc(C_OFF)
+    d.arc([19, 19, 45, 45], start=300, end=240, fill=(255, 255, 255, 255), width=6)
+    d.line([32, 13, 32, 33], fill=(255, 255, 255, 255), width=6)
+    return img
+
+
+def _icon_on():
+    img, d = _disc(C_ON)
+    d.ellipse([15, 23, 33, 41], outline=(255, 255, 255, 255), width=6)
+    d.ellipse([31, 23, 49, 41], outline=(255, 255, 255, 255), width=6)
+    return _live_dot(img)
+
+
+def _icon_timer():
+    img, d = _disc(C_TIMED)
+    d.polygon([(23, 14), (41, 14), (32, 31)], fill=(255, 255, 255, 255))
+    d.polygon([(32, 33), (23, 50), (41, 50)], fill=(255, 255, 255, 255))
+    d.line([21, 12, 43, 12], fill=(255, 255, 255, 255), width=4)
+    d.line([21, 52, 43, 52], fill=(255, 255, 255, 255), width=4)
+    return _live_dot(img)
+
+
+def _icon_until():
+    img, d = _disc(C_UNTIL)
+    d.ellipse([19, 19, 45, 45], fill=(255, 255, 255, 255))
+    d.line([32, 32, 32, 22], fill=C_UNTIL, width=5)
+    d.line([32, 32, 39, 36], fill=C_UNTIL, width=5)
+    d.ellipse([29, 29, 35, 35], fill=C_UNTIL)
+    return _live_dot(img)
+
+
+def _icon_paused():
+    img, d = _disc(C_OFF)
+    d.rounded_rectangle([24, 20, 30, 44], radius=2, fill=(255, 255, 255, 255))
+    d.rounded_rectangle([34, 20, 40, 44], radius=2, fill=(255, 255, 255, 255))
+    return img
+
+
+ICONS = {"off": _icon_off(), "on": _icon_on(), "timed": _icon_timer(),
+         "until": _icon_until(), "paused": _icon_paused()}
 
 
 # ---------- state ----------
@@ -121,6 +164,8 @@ def refresh():
         icon.icon = ICONS["off"]
     elif engine.mode == "on":
         icon.icon = ICONS["on"]
+    elif engine.mode == "until":
+        icon.icon = ICONS["until"]
     else:
         icon.icon = ICONS["timed"]
     icon.title = tooltip()

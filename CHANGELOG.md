@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The windowed `hustle-on.exe` now honours `--version`, `--check`, `--enforce-only` and every other
+  CLI flag instead of launching the tray; output is attached to the parent console.
+
+### Added
+- Windows VERSIONINFO resource (FileVersion, ProductName, Copyright) generated from `pyproject.toml`.
+
 ## [1.2.0]
 
 ### Added

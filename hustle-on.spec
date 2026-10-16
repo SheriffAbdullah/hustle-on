@@ -1,4 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os, sys
+sys.path.insert(0, os.path.abspath(SPECPATH))
+import make_version_info
+make_version_info.generate(os.path.abspath(SPECPATH))  # _version.py + version_info.txt
 
 
 a = Analysis(
@@ -36,4 +40,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     manifest='app.manifest',
+    version='version_info.txt',
 )

@@ -285,3 +285,52 @@ def test_first_run_flag_default_and_persist(tray):
     tray.saved["first_run_done"] = True
     tray.persist()
     assert core.load_settings()["first_run_done"] is True
+
+
+# cli-flags-in-exe: dispatch before mutex / Tk
+def test_cli_dispatch_none_without_args(tray):
+    assert tray.run_cli_if_requested([]) is None
+
+
+@pytest.mark.parametrize("flag", ["--version", "--check", "--enforce-only"])
+def test_cli_dispatch_delegates_to_core(tray, monkeypatch, flag):
+    calls = []
+    monkeypatch.setattr(core, "main", lambda argv=None: calls.append(argv) or 0)
+    monkeypatch.setattr(tray, "_attach_parent_console", lambda: True)
+    monkeypatch.setattr(tray, "ensure_single_instance",
+                        lambda: (_ for _ in ()).throw(AssertionError("mutex taken")))
+    assert tray.run_cli_if_requested([flag]) == 0
+    assert calls == [[flag]]
+
+
+def test_main_exits_via_cli_before_mutex(tray, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["hustle-on.exe", "--version"])
+    monkeypatch.setattr(core, "main", lambda argv=None: 0)
+    monkeypatch.setattr(tray, "_attach_parent_console", lambda: True)
+    monkeypatch.setattr(tray, "ensure_single_instance",
+                        lambda: (_ for _ in ()).throw(AssertionError("mutex taken")))
+    with pytest.raises(SystemExit) as ei:
+        tray.main()
+    assert ei.value.code == 0
+
+
+def test_cli_dispatch_survives_no_console_and_systemexit(tray, monkeypatch):
+    monkeypatch.setattr(tray, "_attach_parent_console", lambda: False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(core, "main", lambda argv=None: (_ for _ in ()).throw(SystemExit(2)))
+    assert tray.run_cli_if_requested(["--bogus"]) == 2
+
+
+def test_attach_console_falls_back_when_no_parent(tray, monkeypatch):
+    class K32:
+        def AttachConsole(self, pid):
+            return 0
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: K32())
+    assert tray._attach_parent_console() is False
+
+
+def test_version_info_generation():
+    import make_version_info as m
+    out = m.version_info_text("1.2.0")
+    assert "filevers=(1, 2, 0, 0)" in out and "StringStruct('FileVersion', '1.2.0')" in out
+    assert "StringStruct('ProductName', 'HustleOn')" in out

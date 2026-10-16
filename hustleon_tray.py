@@ -15,11 +15,49 @@ import hustleon_core as core
 import hustleon_icons as hicons
 import hustleon_win as hw
 
-# The elevated one-time unlock must run BEFORE heavy imports and before the
-# single-instance check: a frozen exe has no script arg, and the tray is
-# usually already running when the elevated copy starts.
-if __name__ == "__main__" and "--enforce-only" in sys.argv[1:]:
-    raise SystemExit(core.main(["--enforce-only"]))
+def _attach_parent_console():
+    """A --noconsole exe has no stdout; attach to the launching console if any.
+
+    Returns True when sys.stdout/sys.stderr now point at a console, False when
+    there is no parent console (output is then discarded)."""
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if not k32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS
+            return False
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+        sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+        return True
+    except Exception:
+        return False
+
+
+def run_cli_if_requested(argv=None):
+    """If any command-line args were given, run the core CLI and return its exit code.
+
+    Returns None when there are no args (normal tray launch). Must run before the
+    single-instance mutex and before any Tk/pystray object exists."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        return None
+    if getattr(sys, "frozen", False) or sys.stdout is None or sys.stderr is None:
+        if not _attach_parent_console():
+            if sys.stdout is None:
+                sys.stdout = open(os.devnull, "w")
+            if sys.stderr is None:
+                sys.stderr = open(os.devnull, "w")
+    try:
+        return core.main(args)
+    except SystemExit as e:  # argparse --version/--help/errors
+        return e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+
+
+# CLI flags (--version, --check, --enforce-only, ...) must run BEFORE heavy imports
+# and before the single-instance check: a frozen exe has no script arg, and the tray
+# is usually already running when the elevated copy starts.
+if __name__ == "__main__":
+    _rc = run_cli_if_requested()
+    if _rc is not None:
+        raise SystemExit(_rc)
 
 try:
     from PIL import Image  # noqa: F401  (also checks Pillow is installed)
@@ -1072,8 +1110,9 @@ def heartbeat():
 def main():
     global icon, _mutex
     # Defensive: normally handled at import time for the frozen exe, before the mutex.
-    if "--enforce-only" in sys.argv[1:]:
-        raise SystemExit(core.main(["--enforce-only"]))
+    rc = run_cli_if_requested()
+    if rc is not None:
+        raise SystemExit(rc)
     # Crisp menus/icons/dialogs on high-DPI: declare Per-Monitor V2 before any
     # window exists (the manifest covers the exe; this covers running from source).
     hw.set_dpi_awareness()

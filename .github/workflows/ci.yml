@@ -20,5 +20,6 @@ jobs:
       - name: PyInstaller build smoke test
         run: |
           python -c "import re; v = re.search(r'(?m)^version\s*=\s*.([^\x22]+).', open('pyproject.toml').read()).group(1); open('_version.py', 'w').write('__version__ = %r' % v)"
+          python make_version_info.py
           python -m PyInstaller --noconfirm hustle-on.spec
           if (-not (Test-Path dist/hustle-on.exe)) { throw "exe not built" }

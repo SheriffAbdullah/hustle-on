@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 settings.json
 _version.py
+version_info.txt
